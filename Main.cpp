@@ -15,6 +15,7 @@
 
 #include <GL/glut.h>
 #include "GameLogic.h"
+#include "SpatialGrid.h"
 #include <iostream>
 #include <cstdio>
 #include <cmath>
@@ -23,6 +24,7 @@
 // Estado global
 // ---------------------------------------------------------------------------
 EstadoDoJogo jogo;
+GradeEspacial gradeEspacial;
 int tempoAnterior = 0;
 bool teclasPressionadas[256] = {false};
 bool disparouNesteFrame = false;  // setado em cliqueMouse, lido e limpo em timer()
@@ -503,14 +505,15 @@ void desenharHUD() {
     glPushMatrix();
     glLoadIdentity();
 
-    // ---- Barra de HP ----
+// ---- Barra de HP ----
     {
-        const int   MAX_HP = 3;
+        int maxHP = jogo.protagonista.hpMaximo; // Valor dinâmico oriundo do upgrade
         const float BAR_W  = 120.0f;
         const float BAR_H  = 14.0f;
         const float BAR_X  = 12.0f;
         const float BAR_Y  = JANELA_H - 26.0f;
-        float propHP = (float)jogo.protagonista.hp / (float)MAX_HP;
+        
+        float propHP = (float)jogo.protagonista.hp / (float)maxHP;
         if (propHP < 0.0f) propHP = 0.0f;
         if (propHP > 1.0f) propHP = 1.0f;
 
@@ -521,6 +524,7 @@ void desenharHUD() {
             glVertex2f(BAR_X + BAR_W, BAR_Y + BAR_H);
             glVertex2f(BAR_X,         BAR_Y + BAR_H);
         glEnd();
+        
         glColor3f(0.85f, 0.15f, 0.15f);
         glBegin(GL_QUADS);
             glVertex2f(BAR_X,                   BAR_Y);
@@ -528,8 +532,9 @@ void desenharHUD() {
             glVertex2f(BAR_X + BAR_W * propHP,  BAR_Y + BAR_H);
             glVertex2f(BAR_X,                   BAR_Y + BAR_H);
         glEnd();
+        
         char buf[32];
-        sprintf(buf, "HP  %d/%d", jogo.protagonista.hp, MAX_HP);
+        sprintf(buf, "HP  %d/%d", jogo.protagonista.hp, maxHP);
         glColor3f(1.0f, 0.85f, 0.85f);
         glRasterPos2f(BAR_X + BAR_W + 8.0f, BAR_Y + 2.0f);
         for (const char* c = buf; *c; ++c)
@@ -631,6 +636,35 @@ void desenharHUD() {
                     glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
             }
         }
+
+            // ---- Tela de Pausa ----
+        if (jogo.jogoPausado && !jogo.pausadoParaUpgrade && jogo.protagonista.vivo) {
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glColor4f(0.0f, 0.0f, 0.0f, 0.65f);
+            glBegin(GL_QUADS);
+                glVertex2f(0,        0);
+                glVertex2f(JANELA_W, 0);
+                glVertex2f(JANELA_W, JANELA_H);
+                glVertex2f(0,        JANELA_H);
+            glEnd();
+            glDisable(GL_BLEND);
+
+            const char* msg1 = "JOGO PAUSADO";
+            const char* msg2 = "Pressione P ou ESC para continuar";
+            
+            glColor3f(1.0f, 1.0f, 1.0f);
+            glRasterPos2f((float)JANELA_W / 2.0f - 70.0f, (float)JANELA_H / 2.0f + 10.0f);
+            for (const char* c = msg1; *c; ++c) glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
+            
+            glColor3f(0.7f, 0.7f, 0.7f);
+            glRasterPos2f((float)JANELA_W / 2.0f - 105.0f, (float)JANELA_H / 2.0f - 15.0f);
+            for (const char* c = msg2; *c; ++c) glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
+        }
+
+        glPopMatrix();
+        glMatrixMode(GL_PROJECTION);
+
     }
 
     // ---- Barra de XP ----
@@ -831,6 +865,12 @@ void inicializarJogo() {
     jogo.tempoSobrevivido    = 0.0f;
     jogo.tempoUltimoSpawn    = 0.0f;
     jogo.pausadoParaUpgrade  = false;
+    jogo.tempoSobrevivido    = 0.0f;
+    jogo.tempoUltimoSpawn    = 0.0f;
+    jogo.pausadoParaUpgrade  = false;
+    jogo.jogoPausado         = false;
+    jogo.nivelAntesDaEscolha = 0;
+    jogo.atirandoAgora       = false;
     jogo.nivelAntesDaEscolha = 0;
     jogo.atirandoAgora       = false;
 
@@ -907,7 +947,7 @@ void redimensionar(int w, int h) {
 void pressionarTecla(unsigned char key, int x, int y) {
     teclasPressionadas[key] = true;
 
-    // Se estiver na tela de Level Up, intercepta os números e bloqueia o resto
+    // Se estiver na tela de Level Up...
     if (jogo.pausadoParaUpgrade) {
         int escolha = -1;
         if (key == '1') escolha = 0;
@@ -917,11 +957,19 @@ void pressionarTecla(unsigned char key, int x, int y) {
         if (escolha >= 0 && escolha < jogo.quantidadeOpcoes) {
             aplicarUpgrade(jogo, jogo.opcoesUpgrade[escolha]);
             jogo.pausadoParaUpgrade = false;
-            
-            // Sincroniza o timer para evitar "pulos" na física ao despausar
             tempoAnterior = glutGet(GLUT_ELAPSED_TIME);
         }
-        return; // Não processa movimentação ou parry enquanto escolhe
+        return; 
+    }
+
+    // Sistema de Pausa Manual (Tecla P ou ESC)
+    if ((key == 'p' || key == 'P' || key == 27) && jogo.protagonista.vivo) {
+        jogo.jogoPausado = !jogo.jogoPausado;
+        if (!jogo.jogoPausado) {
+            // Sincroniza o timer ao voltar para evitar falhas físicas (pulo de frames)
+            tempoAnterior = glutGet(GLUT_ELAPSED_TIME);
+        }
+        return;
     }
 
     if (key == ' ') {
@@ -932,7 +980,7 @@ void pressionarTecla(unsigned char key, int x, int y) {
         jogo.horda.clear();
         jogo.tirosNaTela.clear();
         jogo.gemas.clear();
-        inicializarJogo(); // O reinício agora limpa tudo graças à sua função
+        inicializarJogo(); 
     }
 }
 
@@ -950,8 +998,8 @@ void soltarTecla(unsigned char key, int x, int y) {
 // Mouse
 // ---------------------------------------------------------------------------
 void cliqueMouse(int button, int state, int x, int y) {
-    // CORREÇÃO: Impede cliques acidentais e ganho de tensão durante o Level Up
-    if (jogo.pausadoParaUpgrade) {
+    // Impede cliques acidentais durante o Level Up ou Pausa Manual
+    if (jogo.pausadoParaUpgrade || jogo.jogoPausado) {
         return; 
     }
 
@@ -963,7 +1011,6 @@ void cliqueMouse(int button, int state, int x, int y) {
         }
     }
 }
-
 // ---------------------------------------------------------------------------
 // Processamento de movimento
 //
@@ -1009,8 +1056,15 @@ void processarMovimento(float deltaTime) {
 //  A pausa é desativada apenas quando o jogador pressiona E (em pressionarTecla).
 // ---------------------------------------------------------------------------
 void timer(int value) {
-    // PAUSA INSTANTÂNEA: nenhuma lógica executa enquanto pausadoParaUpgrade
+    // PAUSA INSTANTÂNEA: Nenhuma lógica executa durante upgrades
     if (jogo.pausadoParaUpgrade) {
+        glutPostRedisplay();
+        glutTimerFunc(16, timer, 0);
+        return;
+    }
+
+    // PAUSA MANUAL
+    if (jogo.jogoPausado) {
         glutPostRedisplay();
         glutTimerFunc(16, timer, 0);
         return;
@@ -1046,8 +1100,9 @@ void timer(int value) {
     processarSpawn(jogo, deltaTime);
     processarIA(jogo, deltaTime);
 
-    processarColisoesTiros(jogo);
-    processarColisaoZumbiJogador(jogo, deltaTime);
+    gradeEspacial.construirGrade(jogo);
+    processarColisoesTiros_Grade(jogo, gradeEspacial);
+    processarColisaoZumbiJogador_Grade(jogo, gradeEspacial, deltaTime);
 
     atualizarProjeteis(jogo, deltaTime);
 
@@ -1056,7 +1111,8 @@ void timer(int value) {
     // display() já vai mostrar a tela de level up neste mesmo frame porque
     // lê jogo.pausadoParaUpgrade em tempo real.
     processarColetaDeGemas(jogo);
-
+    processarLevelUp(jogo);
+    
     static float temporizadorLimpeza = 0.0f;
     temporizadorLimpeza += deltaTime;
     if (temporizadorLimpeza >= 5.0f) {

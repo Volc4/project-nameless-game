@@ -824,6 +824,192 @@ inline void processarMorteZumbi(EstadoDoJogo& jogo, Zumbi& z) {
     }
 }
 
+// ===========================================================================
+// SEÇÃO: SISTEMA DE PARTÍCULAS
+//
+// Sistema simples de partículas cosméticas (sem textura, sem física complexa).
+// As partículas nunca afetam colisão, dano ou qualquer outra regra de jogo;
+// elas existem apenas para dar feedback visual de impacto/morte.
+// ===========================================================================
+
+// Gera uma pequena explosão de partículas na posição informada.
+// Entrada: jogo (para empurrar em jogo.particulas), posicaoOrigem (centro da
+//          explosão, tipicamente a posição do zumbi morto), corR/corG/corB
+//          (cor-base das partículas, geralmente a cor do inimigo morto).
+// Saída:   adiciona entre 10 e 30 partículas a jogo.particulas.
+// Funcionamento: cada partícula recebe uma direção aleatória no plano XZ
+//          (com um pequeno componente vertical Y para dar volume 3D), uma
+//          velocidade aleatória, um tempo de vida aleatório, e uma leve
+//          variação de cor em torno da cor-base para dar mais textura visual.
+inline void criarParticulasMorte(EstadoDoJogo& jogo, Vetor3D posicaoOrigem,
+                                  float corR, float corG, float corB) {
+    const int MIN_PARTICULAS = 10;
+    const int MAX_PARTICULAS = 30;
+    int quantidade = MIN_PARTICULAS + (rand() % (MAX_PARTICULAS - MIN_PARTICULAS + 1));
+
+    for (int i = 0; i < quantidade; ++i) {
+        Particula p;
+        p.posicao = posicaoOrigem;
+        p.posicao.y += 0.4f; // Origem um pouco acima do chão (altura do "torso")
+
+        // Direção aleatória no plano XZ (ângulo completo 0-360°)
+        float anguloGraus = (float)(rand() % 360);
+        float anguloRad   = anguloGraus * (3.14159f / 180.0f);
+
+        // Velocidade aleatória entre 1.5 e 6.0 unidades/seg
+        float velPlano = 1.5f + ((rand() % 100) / 100.0f) * 4.5f;
+
+        // Pequeno componente vertical aleatório para dar volume à explosão
+        float velY = 1.0f + ((rand() % 100) / 100.0f) * 3.0f;
+
+        p.velocidade.x = cosf(anguloRad) * velPlano;
+        p.velocidade.z = sinf(anguloRad) * velPlano;
+        p.velocidade.y = velY;
+
+        // Tempo de vida aleatório entre 0.4s e 1.0s
+        p.tempoVidaMaximo = 0.4f + ((rand() % 100) / 100.0f) * 0.6f;
+        p.tempoVida        = p.tempoVidaMaximo;
+
+        // Variação leve de cor em torno da cor-base (mantém identidade do inimigo)
+        float variacao = ((rand() % 100) / 100.0f) * 0.25f - 0.125f; // -0.125..+0.125
+        p.corR = corR + variacao; if (p.corR < 0.0f) p.corR = 0.0f; if (p.corR > 1.0f) p.corR = 1.0f;
+        p.corG = corG + variacao; if (p.corG < 0.0f) p.corG = 0.0f; if (p.corG > 1.0f) p.corG = 1.0f;
+        p.corB = corB + variacao; if (p.corB < 0.0f) p.corB = 0.0f; if (p.corB > 1.0f) p.corB = 1.0f;
+
+        p.tamanho       = 0.06f + ((rand() % 100) / 100.0f) * 0.10f; // 0.06–0.16
+        p.transparencia = 1.0f;
+        p.ativa         = true;
+
+        jogo.particulas.push_back(p);
+    }
+}
+
+// Atualiza posição, gravidade leve e tempo de vida de todas as partículas.
+// Entrada: jogo (vetor jogo.particulas), deltaTime (segundos desde o último frame)
+// Saída:   modifica cada Particula in-place; desativa as que expiraram.
+//          Chamada exclusivamente em timer() — nunca desenha nada.
+inline void atualizarParticulas(EstadoDoJogo& jogo, float deltaTime) {
+    const float GRAVIDADE_LEVE = 4.0f; // unidades/seg^2, puramente estética
+
+    for (size_t i = 0; i < jogo.particulas.size(); ++i) {
+        Particula& p = jogo.particulas[i];
+        if (!p.ativa) continue;
+
+        // Gravidade opcional leve no eixo Y
+        p.velocidade.y -= GRAVIDADE_LEVE * deltaTime;
+
+        p.posicao.x += p.velocidade.x * deltaTime;
+        p.posicao.y += p.velocidade.y * deltaTime;
+        p.posicao.z += p.velocidade.z * deltaTime;
+
+        // Nunca deixa a partícula afundar visualmente abaixo do chão
+        if (p.posicao.y < 0.0f) p.posicao.y = 0.0f;
+
+        p.tempoVida -= deltaTime;
+        if (p.tempoVida <= 0.0f) {
+            p.tempoVida   = 0.0f;
+            p.ativa       = false;
+            p.transparencia = 0.0f;
+            continue;
+        }
+
+        // Transparência decai linearmente com o tempo de vida restante
+        p.transparencia = p.tempoVida / p.tempoVidaMaximo;
+    }
+}
+
+// Remove partículas inativas do vetor (mantém o vetor enxuto).
+// Entrada: jogo
+// Saída:   jogo.particulas passa a conter apenas partículas ativas.
+inline void limparParticulasInativas(EstadoDoJogo& jogo) {
+    std::vector<Particula> particulasAtivas;
+    for (size_t i = 0; i < jogo.particulas.size(); ++i) {
+        if (jogo.particulas[i].ativa) particulasAtivas.push_back(jogo.particulas[i]);
+    }
+    jogo.particulas = particulasAtivas;
+}
+
+// ===========================================================================
+// SEÇÃO: FLOATING DAMAGE NUMBERS
+//
+// Números de dano flutuantes: criados sempre que um inimigo sofre dano.
+// Puramente visuais — não alteram hp, vida ou qualquer regra de combate.
+// ===========================================================================
+
+// Cria um novo FloatingDamage no ponto de impacto.
+// Entrada: jogo (para empurrar em jogo.numerosFlutuantes), posicaoImpacto
+//          (posição 3D onde o dano ocorreu, tipicamente a posição do zumbi
+//          atingido), dano (valor a ser exibido).
+// Saída:   adiciona um FloatingDamage a jogo.numerosFlutuantes.
+// Observação: cada chamada cria sua própria variável local 'fd' — nenhuma
+//          variável temporária é reaproveitada entre chamadas.
+inline void criarFloatingDamage(EstadoDoJogo& jogo, Vetor3D posicaoImpacto, int dano) {
+    FloatingDamage fd;
+    fd.posicao = posicaoImpacto;
+    fd.posicao.y += 1.2f; // Surge próximo ao "topo" do inimigo, não nos pés
+
+    fd.valorDano             = dano;
+    fd.tempoTotal            = 0.9f;
+    fd.tempoRestante         = fd.tempoTotal;
+    fd.deslocamentoVertical  = 0.0f;
+    fd.transparencia         = 1.0f;
+
+    // Dano alto em destaque (amarelo/laranja), dano normal em branco
+    if (dano >= 7) {
+        fd.corR = 1.0f; fd.corG = 0.65f; fd.corB = 0.10f;
+    } else {
+        fd.corR = 1.0f; fd.corG = 1.0f; fd.corB = 1.0f;
+    }
+
+    jogo.numerosFlutuantes.push_back(fd);
+}
+
+// Atualiza a subida, o fade e o tempo de vida de todos os FloatingDamage.
+// Entrada: jogo, deltaTime
+// Saída:   modifica cada FloatingDamage in-place; remove os expirados.
+//          Chamada exclusivamente em timer() — nunca desenha nada.
+inline void atualizarFloatingDamage(EstadoDoJogo& jogo, float deltaTime) {
+    const float VELOCIDADE_SUBIDA = 1.4f; // unidades de mundo por segundo
+
+    std::vector<FloatingDamage> ativos;
+    ativos.reserve(jogo.numerosFlutuantes.size());
+
+    for (size_t i = 0; i < jogo.numerosFlutuantes.size(); ++i) {
+        FloatingDamage& fd = jogo.numerosFlutuantes[i];
+
+        fd.tempoRestante -= deltaTime;
+        if (fd.tempoRestante <= 0.0f) continue; // descarta (não copia para 'ativos')
+
+        fd.deslocamentoVertical += VELOCIDADE_SUBIDA * deltaTime;
+
+        // Interpolação suave: fração de vida restante (1.0 → 0.0)
+        float fracaoVida = fd.tempoRestante / fd.tempoTotal;
+        // Easing simples (suaviza o final do fade, em vez de linear puro)
+        fd.transparencia = fracaoVida * fracaoVida;
+
+        ativos.push_back(fd);
+    }
+
+    jogo.numerosFlutuantes = ativos;
+}
+
+// Retorna a cor-base (RGB) associada a cada tipo de zumbi.
+// Usada para colorir partículas de morte de forma consistente com o
+// inimigo que as originou. Os valores espelham as cores usadas em
+// desenharInimigos() (Main.cpp), mantendo identidade visual.
+// Entrada: tipo do zumbi
+// Saída:   corR, corG, corB preenchidos por referência
+inline void obterCorBaseZumbi(TipoZumbi tipo, float& corR, float& corG, float& corB) {
+    switch (tipo) {
+        case NORMAL:    corR = 1.0f;  corG = 0.10f; corB = 0.10f; break;
+        case RAPIDO:    corR = 1.0f;  corG = 0.45f; corB = 0.0f;  break;
+        case TANK:      corR = 0.50f; corG = 0.0f;  corB = 0.85f; break;
+        case ATIRADOR:  corR = 0.90f; corG = 0.0f;  corB = 0.75f; break;
+        case EXPLOSIVO: corR = 1.0f;  corG = 0.80f; corB = 0.0f;  break;
+        default:        corR = 1.0f;  corG = 0.10f; corB = 0.10f; break;
+    }
+}
+
 // Cruza tiros com a horda, respeitando perfuração e evitando acertar o mesmo
 // zumbi duas vezes no mesmo frame com o mesmo projétil.
 // Comportamentos especiais por TipoDisparo:
@@ -860,6 +1046,9 @@ inline void processarColisoesTiros(EstadoDoJogo& jogo) {
 
                 z.vida -= danoEfetivo;
 
+                // NOVO: cria o número de dano flutuante no ponto de impacto
+                criarFloatingDamage(jogo, z.posicao, danoEfetivo);
+
                 // Efeitos especiais por tipo de disparo
                 if (jogo.stand.tipoDisparoAtual == DISPARO_CADENCIA_VIDA) {
                     // 30% de chance de recuperar 1 HP
@@ -877,6 +1066,11 @@ inline void processarColisoesTiros(EstadoDoJogo& jogo) {
 
                 // Morte do zumbi
                 if (z.vida <= 0) {
+                    // NOVO: explosão de partículas na cor do inimigo morto
+                    float corR, corG, corB;
+                    obterCorBaseZumbi(z.tipo, corR, corG, corB);
+                    criarParticulasMorte(jogo, z.posicao, corR, corG, corB);
+
                     processarMorteZumbi(jogo, z);
                 }
 
@@ -921,10 +1115,14 @@ inline void processarColisaoZumbiJogador(EstadoDoJogo& jogo, float deltaTime) {
 // SEÇÃO: RECOMPENSAS E LEVEL UP
 // ===========================================================================
 
+// A inclusão do termo quadrático (nivel * nivel) força uma desaceleração,
+// exigindo volumes massivamente maiores de gemas nos níveis avançados.
+// Retorna para o modelo original (Rápido e linear)
 inline int calcularXpParaNivel(int nivel) {
-    return 10 + (nivel * 20);
+    return 10 + (nivel * 15);
 }
 
+// Apenas coleta a XP
 inline void processarColetaDeGemas(EstadoDoJogo& jogo) {
     const float RAIO_COLETA_QUAD = 3.0f * 3.0f;
     Jogador& jog = jogo.protagonista;
@@ -935,20 +1133,27 @@ inline void processarColetaDeGemas(EstadoDoJogo& jogo) {
 
         float dist = calcularDistanciaQuadrada(jog.posicao, gema.posicao);
         if (dist <= RAIO_COLETA_QUAD) {
-            gema.coletada  = true;
-            jog.xpAtual   += gema.valorXP;
+            gema.coletada = true;
+            jog.xpAtual  += gema.valorXP;
+        }
+    }
+}
 
-            while (jog.xpAtual >= jog.xpParaProximoNivel) {
-                jog.xpAtual           -= jog.xpParaProximoNivel;
-                jog.nivel             += 1;
-                jog.xpParaProximoNivel = calcularXpParaNivel(jog.nivel);
+// Nova função segura para o Level Up (Garante que o jogo não congele)
+// Nova função segura para o Level Up (Garante que o jogo não congele)
+inline void processarLevelUp(EstadoDoJogo& jogo) {
+    if (jogo.pausadoParaUpgrade) return;
 
-                jogo.pausadoParaUpgrade  = true;
-                jogo.nivelAntesDaEscolha = jog.nivel;
+    if (jogo.protagonista.xpAtual >= jogo.protagonista.xpParaProximoNivel) {
+        jogo.protagonista.xpAtual -= jogo.protagonista.xpParaProximoNivel;
+        jogo.protagonista.nivel   += 1;
+        jogo.protagonista.xpParaProximoNivel = calcularXpParaNivel(jogo.protagonista.nivel);
 
-                // Sorteia as opções de upgrade no momento da pausa
-                sortearUpgrades(jogo);
-            }
+        sortearUpgrades(jogo);
+
+        if (jogo.quantidadeOpcoes > 0) {
+            jogo.pausadoParaUpgrade = true;
+            jogo.nivelAntesDaEscolha = jogo.protagonista.nivel;
         }
     }
 }

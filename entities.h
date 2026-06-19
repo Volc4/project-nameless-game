@@ -127,6 +127,60 @@ struct GemaXP {
     bool coletada;
 };
 
+// ---------------------------------------------------------------------------
+// Particula
+//   Unidade individual do sistema de partículas (explosões de morte etc).
+//   Puramente visual: nunca participa de colisão ou lógica de jogo.
+//
+//   posicao            — posição 3D atual no mundo.
+//   velocidade          — vetor de deslocamento por segundo (já contém a
+//                         magnitude/direção combinadas).
+//   tempoVida           — segundos restantes antes da partícula expirar.
+//   tempoVidaMaximo     — duração total original, usada para interpolar
+//                         o fade de transparência (tempoVida / tempoVidaMaximo).
+//   corR, corG, corB    — cor RGB (0.0–1.0) da partícula.
+//   tamanho             — tamanho do ponto/quad ao desenhar.
+//   transparencia       — alfa atual (0.0–1.0), decai com o tempo.
+//   ativa               — false = pronta para remoção.
+// ---------------------------------------------------------------------------
+struct Particula {
+    Vetor3D posicao;
+    Vetor3D velocidade;
+    float tempoVida;
+    float tempoVidaMaximo;
+    float corR, corG, corB;
+    float tamanho;
+    float transparencia;
+    bool ativa;
+};
+
+// ---------------------------------------------------------------------------
+// FloatingDamage
+//   Número de dano flutuante exibido sobre um inimigo no instante em que
+//   ele é atingido. Puramente visual — não interfere em hp, colisão ou
+//   qualquer outro sistema de jogo.
+//
+//   posicao            — posição 3D do impacto (convertida para tela via
+//                         gluProject no momento do desenho).
+//   valorDano           — quantidade de dano a ser exibida como texto.
+//   tempoRestante       — segundos restantes antes de desaparecer.
+//   tempoTotal          — duração original, usada para interpolar a subida
+//                         e o fade (1.0 no início, 0.0 no fim).
+//   deslocamentoVertical— quanto o número já subiu (unidades de mundo),
+//                         cresce a cada frame para o efeito de flutuação.
+//   corR, corG, corB    — cor RGB do texto.
+//   transparencia       — alfa atual (0.0–1.0), decai com o tempo.
+// ---------------------------------------------------------------------------
+struct FloatingDamage {
+    Vetor3D posicao;
+    int valorDano;
+    float tempoRestante;
+    float tempoTotal;
+    float deslocamentoVertical;
+    float corR, corG, corB;
+    float transparencia;
+};
+
 // Tipos de inimigos baseados no GDD
 enum TipoZumbi { NORMAL, RAPIDO, TANK, ATIRADOR, EXPLOSIVO };
 
@@ -153,28 +207,34 @@ struct EstadoDoJogo {
     std::vector<Zumbi> horda;
     std::vector<Projetil> tirosNaTela;
     std::vector<GemaXP> gemas;
+
+    // NOVO: sistemas de feedback visual (puramente cosméticos)
+    std::vector<Particula> particulas;
+    std::vector<FloatingDamage> numerosFlutuantes;
+
     float tempoSobrevivido;
 
     float tempoUltimoSpawn;
     float cooldownAtual;
     int quantidadeSpawnAtual;
 
-    // Controle do loop principal
+    // Controle do loop principal (Cuidado para não duplicar esta parte!)
     bool pausadoParaUpgrade;
     int nivelAntesDaEscolha;
+    bool jogoPausado; // Controle de pausa manual
 
     // Sinaliza se o jogador disparou algum tiro neste frame
     bool atirandoAgora;
 
-    // NOVO: controle de evolução de disparo
+    // Controle de evolução de disparo
     int contagemAtributosNivel2;    // Quantos atributos atingiram exatamente nível 2
-    bool disparoEvoluido;           // true após primeira evolução (nunca muda de novo)
-    TipoUpgrade primeiroAtributoNivel2;  // Primeiro atributo a atingir nível 2
-    TipoUpgrade segundoAtributoNivel2;   // Segundo atributo a atingir nível 2
+    bool disparoEvoluido;           // true após primeira evolução
+    TipoUpgrade primeiroAtributoNivel2;  
+    TipoUpgrade segundoAtributoNivel2;   
 
-    // NOVO: opções sorteadas para o menu de upgrade atual
+    // Opções sorteadas para o menu de upgrade atual
     TipoUpgrade opcoesUpgrade[3];
-    int quantidadeOpcoes;           // Pode ser < 3 se poucos atributos disponíveis
+    int quantidadeOpcoes;           
 };
 
 #endif
