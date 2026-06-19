@@ -439,11 +439,14 @@ inline void aplicarUpgrade(EstadoDoJogo& jogo, TipoUpgrade tipo) {
             jogo.protagonista.velocidade = calcularVelocidadeJogador(novoNivel);
             break;
 
-        case VIDA: {
+      case VIDA: {
+            int hpMaxAntigo = jogo.protagonista.hpMaximo;
             int hpMaxNovo = calcularHPMaximo(novoNivel);
             jogo.protagonista.hpMaximo = hpMaxNovo;
-            // Recupera 1 HP ao subir, sem ultrapassar o máximo
-            jogo.protagonista.hp += 1;
+            
+            // Adiciona ao HP atual a diferença adquirida no aumento do teto máximo
+            jogo.protagonista.hp += (hpMaxNovo - hpMaxAntigo);
+            
             if (jogo.protagonista.hp > jogo.protagonista.hpMaximo)
                 jogo.protagonista.hp = jogo.protagonista.hpMaximo;
             break;
@@ -919,7 +922,7 @@ inline void processarColisaoZumbiJogador(EstadoDoJogo& jogo, float deltaTime) {
 // ===========================================================================
 
 inline int calcularXpParaNivel(int nivel) {
-    return 10 + (nivel * 15);
+    return 10 + (nivel * 20);
 }
 
 inline void processarColetaDeGemas(EstadoDoJogo& jogo) {
