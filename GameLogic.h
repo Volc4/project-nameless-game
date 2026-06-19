@@ -45,40 +45,85 @@ const int   GANHO_HP_POR_NIVEL         = 1;    // +1 de HP máximo por nível
 // Entrada: nível do atributo DANO (0–3)
 // Saída:   dano base dos projéteis
 inline int calcularDanoBase(int nivelDano) {
-    return DANO_BASE + nivelDano * GANHO_DANO_POR_NIVEL;
+    if (nivelDano == 1) return 3;  // Mata zumbis normais (HP 1) e atiradores (HP 2) num hit
+    if (nivelDano == 2) return 7;  // Quase mata o Tank (HP 10) num hit
+    if (nivelDano >= 3) return 20; // Hit-Kill em quase tudo, poder absoluto
+    
+    return 1; // Nível 0 (Base)
+}
+
+// Entrada: nível do atributo CADENCIA (0–3)
+// Saída:   quantidade de projéteis disparados por clique
+inline int calcularQuantidadeTiros(int nivelCadencia) {
+    if (nivelCadencia == 1) return 2; // Tiro duplo em "V"
+    if (nivelCadencia == 2) return 5; // Espingarda (Cone de 5 tiros)
+    if (nivelCadencia >= 3) return 8; // Explosão Estelar (8 tiros em todas as direções)
+    
+    return 1; // Nível 0 (Base - 1 tiro reto)
+}
+
+// Entrada: nível do atributo DANO (0–3)
+// Saída:   multiplicador de área/tamanho do projétil
+inline float calcularMultiplicadorTamanho(int nivelDano) {
+    if (nivelDano == 1) return 1.5f; // 50% maior
+    if (nivelDano == 2) return 2.2f; // Mais que o dobro do tamanho
+    if (nivelDano >= 3) return 3.5f; // Projéteis massivos
+    
+    return 1.0f; // Nível 0 (Base)
 }
 
 // Entrada: nível do atributo PERFURACAO (0–3)
 // Saída:   número de inimigos extras que o projétil pode atravessar
+// Entrada: nível do atributo PERFURACAO (0–3)
+// Saída:   número de inimigos extras que o projétil pode atravessar
 inline int calcularPerfuracaoBase(int nivelPerfuracao) {
-    return PERFURACAO_BASE + nivelPerfuracao * GANHO_PERFURACAO_POR_NIVEL;
+    if (nivelPerfuracao == 1) return 1;    // Atravessa 1 inimigo (acerta 2 no total)
+    if (nivelPerfuracao == 2) return 5;    // Atravessa 5 inimigos
+    if (nivelPerfuracao >= 3) return 9999; // Perfuração Infinita
+    
+    return 0; // Nível 0 (não atravessa ninguém)
 }
 
 // Entrada: nível do atributo VELOCIDADE (0–3)
 // Saída:   velocidade de movimento do jogador
 inline float calcularVelocidadeJogador(int nivelVelocidade) {
-    return VELOCIDADE_BASE + nivelVelocidade * GANHO_VELOCIDADE_POR_NIVEL;
+    if (nivelVelocidade == 1) return 13.0f; // Confortável para fugir (+30%)
+    if (nivelVelocidade == 2) return 18.0f; // Muito ágil, escapa facilmente de encurralamentos
+    if (nivelVelocidade >= 3) return 28.0f; // Velocidade extrema, cruza o mapa instantaneamente
+    
+    return 10.0f; // Nível 0 (Base)
 }
 
 // Entrada: nível do atributo TENSAO_UP (0–3)
-// Saída:   cooldown efetivo do Parry (limitado a 0.5s mínimo)
+// Saída:   cooldown efetivo do Parry
 inline float calcularCooldownParry(int nivelTensao) {
-    float cooldown = COOLDOWN_PARRY_SEGUNDOS - nivelTensao * GANHO_TENSAO_REDUCAO;
-    if (cooldown < 0.5f) cooldown = 0.5f;
-    return cooldown;
+    if (nivelTensao == 1) return 1.0f;  // Reduz 0.5s (Uso mais tático)
+    if (nivelTensao == 2) return 0.7f;  // Quase sem recarga
+    if (nivelTensao >= 3) return 0.4f; // Spam infinito (Parry metralhadora)
+    
+    return 1.5f; // Nível 0 (Base)
 }
 
 // Entrada: nível do atributo TENSAO_UP (0–3)
 // Saída:   fator de redução da taxa de acúmulo de tensão por tiro (0.0 = sem redução)
+// Entrada: nível do atributo TENSAO_UP (0–3)
+// Saída:   fator de redução da taxa de acúmulo de tensão por tiro
 inline float calcularReducaoTensaoPorTiro(int nivelTensao) {
-    // Cada nível reduz em 20% a tensão gerada por tiro
-    return nivelTensao * 0.20f;
+    if (nivelTensao == 1) return 0.20f; // 30% menos tensão gerada ao atirar
+    if (nivelTensao == 2) return 0.50f; // 70% menos tensão (Pode atirar à vontade)
+    if (nivelTensao >= 3) return 0.70f;  // 100% de redução (Atirar não gera MAIS NENHUMA tensão, a arma esfria)
+    
+    return 0.0f; // Nível 0 (Base)
 }
 
 // Entrada: nível do atributo VIDA (0–3)
 // Saída:   HP máximo do jogador
 inline int calcularHPMaximo(int nivelVida) {
-    return HP_BASE + nivelVida * GANHO_HP_POR_NIVEL;
+    if (nivelVida == 1) return 5;  // +2 HP (Uma pequena folga)
+    if (nivelVida == 2) return 7;  // +6 HP (Resistente a grandes erros)
+    if (nivelVida >= 3) return 10; // +17 HP (O verdadeiro "Survivor")
+    
+    return 3; // Nível 0 (Base)
 }
 
 // ===========================================================================
@@ -297,6 +342,9 @@ inline Projetil instanciarProjetil(const EstadoDoJogo& jogo, Vetor3D posicaoAlvo
         default:
             break;
     }
+
+    float multiplicadorTamanho = calcularMultiplicadorTamanho(jogo.protagonista.upgrades.niveis[DANO]);
+    p.raioColisao *= multiplicadorTamanho;
 
     return p;
 }
@@ -662,20 +710,61 @@ inline void atualizarTimersStand(EstadoDoJogo& jogo, float deltaTime) {
 // SEÇÃO: DISPARO
 // ===========================================================================
 
-// Instancia um projétil configurado para o TipoDisparo ativo.
+// Instancia múltiplos projéteis configurados para o TipoDisparo ativo.
 // Bloqueia completamente durante sobrecarga.
-// Entrada: jogo (estado global), posicaoAlvo (coordenada mundo do clique)
-// Saída:   adiciona um Projetil a jogo.tirosNaTela (se não em sobrecarga)
 inline void dispararProjetil(EstadoDoJogo& jogo, Vetor3D posicaoAlvo) {
     if (jogo.stand.emSobrecarga) return;
 
-    Projetil novoTiro = instanciarProjetil(jogo, posicaoAlvo);
-    jogo.tirosNaTela.push_back(novoTiro);
+    int qtdTiros = calcularQuantidadeTiros(jogo.protagonista.upgrades.niveis[CADENCIA]);
+    Projetil baseTiro = instanciarProjetil(jogo, posicaoAlvo);
 
-    // Tensão base por clique (independente do tipo de disparo)
+    if (qtdTiros == 1) {
+        // Disparo Padrão (1 tiro reto)
+        jogo.tirosNaTela.push_back(baseTiro);
+    } 
+    else if (qtdTiros == 2) {
+        // Tiro Duplo (Formato em "V", separados por ~17 graus)
+        float angulos[2] = {-0.15f, 0.15f};
+        for (int i = 0; i < 2; i++) {
+            Projetil t = baseTiro;
+            float cosA = std::cos(angulos[i]);
+            float sinA = std::sin(angulos[i]);
+            t.direcao.x = baseTiro.direcao.x * cosA - baseTiro.direcao.z * sinA;
+            t.direcao.z = baseTiro.direcao.x * sinA + baseTiro.direcao.z * cosA;
+            jogo.tirosNaTela.push_back(t);
+        }
+    } 
+    else if (qtdTiros == 5) {
+        // Disparo em Cone (Espingarda)
+        float angulos[5] = {-0.30f, -0.15f, 0.0f, 0.15f, 0.30f};
+        for (int i = 0; i < 5; i++) {
+            Projetil t = baseTiro;
+            float cosA = std::cos(angulos[i]);
+            float sinA = std::sin(angulos[i]);
+            t.direcao.x = baseTiro.direcao.x * cosA - baseTiro.direcao.z * sinA;
+            t.direcao.z = baseTiro.direcao.x * sinA + baseTiro.direcao.z * cosA;
+            jogo.tirosNaTela.push_back(t);
+        }
+    } 
+    else if (qtdTiros >= 8) {
+        // Disparo Radial (Nova, 8 tiros divididos em ângulos de 45 graus)
+        const float PI_QUARTO = 0.785398f; // 45 graus em radianos
+        for (int i = 0; i < 8; i++) {
+            Projetil t = baseTiro;
+            float angulo = i * PI_QUARTO;
+            float cosA = std::cos(angulo);
+            float sinA = std::sin(angulo);
+            t.direcao.x = baseTiro.direcao.x * cosA - baseTiro.direcao.z * sinA;
+            t.direcao.z = baseTiro.direcao.x * sinA + baseTiro.direcao.z * cosA;
+            jogo.tirosNaTela.push_back(t);
+        }
+    }
+
+    // Tensão base por clique (O custo é por clique, não por projétil gerado)
     jogo.stand.tensaoAtual += 5.0f;
-    if (jogo.stand.tensaoAtual > 100.0f)
+    if (jogo.stand.tensaoAtual > 100.0f) {
         jogo.stand.tensaoAtual = 100.0f;
+    }
 }
 
 // Atualiza a trajetória dos projéteis e descarta os que saíram da arena

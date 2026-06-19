@@ -946,11 +946,16 @@ void soltarTecla(unsigned char key, int x, int y) {
 //  Cada GLUT_DOWN cria um projétil e levanta disparouNesteFrame.
 //  O timer() lê essa flag para subir a tensão e a reseta imediatamente depois.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Mouse
+// ---------------------------------------------------------------------------
 void cliqueMouse(int button, int state, int x, int y) {
+    // CORREÇÃO: Impede cliques acidentais e ganho de tensão durante o Level Up
+    if (jogo.pausadoParaUpgrade) {
+        return; 
+    }
+
     if (button == GLUT_LEFT_BUTTON && state == GLUT_DOWN) {
-        // Só tenta atirar (e marca o frame) se não estiver em sobrecarga.
-        // dispararProjetil() também tem o mesmo guard interno — as duas
-        // condições devem ser idênticas para evitar dessincronização.
         if (!jogo.stand.emSobrecarga) {
             Vetor3D posicaoAlvo = cliqueParaMundo(x, y);
             dispararProjetil(jogo, posicaoAlvo);
