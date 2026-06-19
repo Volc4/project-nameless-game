@@ -21,15 +21,44 @@ struct Jogador {
     float velocidade;
     float raioColisao;
     bool emDash;
-    bool vivo; // Se tomar 1 hit, vira false
+    bool vivo;
+
+    // Sistema de HP e invencibilidade temporária
+    int hp;
+    float temporizadorIframe;   // Contador regressivo em segundos
+    float duracaoIframe;        // Duração total do i-frame após levar dano
+
+    // Sistema de XP e Nível
+    int xpAtual;
+    int xpParaProximoNivel;
+    int nivel;
 };
 
 // Dados da Entidade (O "Stand")
 struct Entidade {
     Vetor3D posicao;
-    float anguloMira; // Calculado com o mouse depois
-    float tensaoAtual; // Vai de 0 a 100
-    bool emSobrecarga; // Se a tensão chegar a 100%
+    float anguloMira;
+    float tensaoAtual;          // 0.0f a 100.0f
+
+    // NOVO: emSobrecarga agora é true quando tensão chega a 100%
+    // e permanece assim até a tensão drenar de volta para 0%.
+    bool emSobrecarga;
+
+    // Controle da janela de Parry
+    bool parryAtivo;            // true durante a janela de execução válida
+    float temporizadorParry;    // Conta a duração da janela ativa
+    float cooldownParry;        // Impede spam do Parry
+    float temporizadorCooldown;
+
+    // Efeito visual de feedback do Parry
+    bool parryBemSucedido;
+    float temporizadorFeedback;
+};
+
+struct GemaXP {
+    Vetor3D posicao;
+    int valorXP;
+    bool coletada;
 };
 
 // Tipos de inimigos baseados no seu GDD
@@ -54,13 +83,19 @@ struct EstadoDoJogo {
     Entidade stand;
     std::vector<Zumbi> horda;
     std::vector<Projetil> tirosNaTela;
+    std::vector<GemaXP> gemas;
     float tempoSobrevivido;
-    
-    // Variáveis de controle de Spawn progressivo
+
     float tempoUltimoSpawn;
     float cooldownAtual;
     int quantidadeSpawnAtual;
+
+    // Controle do loop principal
+    bool pausadoParaUpgrade;    // Congela o timer quando true
+    int nivelAntesDaEscolha;    // Para saber quantos upgrades mostrar
+
+    // NOVO: sinaliza se o jogador disparou algum tiro neste frame.
+    // Setado em Main.cpp (cliqueMouse) e lido em atualizarTensao().
+    bool atirandoAgora;
 };
-
 #endif
-
