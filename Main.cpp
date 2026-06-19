@@ -472,6 +472,18 @@ void desenharGemas() {
     glDisable(GL_BLEND);
 }
 
+const char* obterNomeUpgrade(TipoUpgrade tipo) {
+    switch(tipo) {
+        case DANO:       return "Dano";
+        case CADENCIA:   return "Cadencia";
+        case PERFURACAO: return "Perfuracao";
+        case TENSAO_UP:  return "Eficiencia (Tensao)";
+        case VELOCIDADE: return "Velocidade";
+        case VIDA:       return "Vida Maxima";
+        default:         return "Desconhecido";
+    }
+}
+
 // ---------------------------------------------------------------------------
 // HUD — Interface 2D sobreposta à cena 3D
 //
@@ -728,10 +740,11 @@ void desenharHUD() {
     // ---- Tela de Level Up (CORREÇÃO P3) ----
     // Mostrada enquanto jogo.pausadoParaUpgrade == true.
     // Instrui o jogador a pressionar E para continuar (tratado em pressionarTecla).
+    // ---- Tela de Level Up (Seleção de Melhoria) ----
     if (jogo.pausadoParaUpgrade) {
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glColor4f(0.02f, 0.04f, 0.12f, 0.72f);
+        glColor4f(0.02f, 0.04f, 0.12f, 0.85f); // Fundo mais escuro
         glBegin(GL_QUADS);
             glVertex2f(0,        0);
             glVertex2f(JANELA_W, 0);
@@ -743,15 +756,32 @@ void desenharHUD() {
         char buf[64];
         sprintf(buf, "LEVEL UP!  Nivel %d", jogo.protagonista.nivel);
         glColor3f(1.0f, 0.9f, 0.2f);
-        glRasterPos2f((float)JANELA_W / 2.0f - 95.0f, (float)JANELA_H / 2.0f + 12.0f);
-        for (const char* c = buf; *c; ++c)
-            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
+        glRasterPos2f((float)JANELA_W / 2.0f - 85.0f, (float)JANELA_H / 2.0f + 60.0f);
+        for (const char* c = buf; *c; ++c) glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
 
-        const char* msg2 = "Pressione E para continuar";
         glColor3f(0.85f, 0.85f, 0.85f);
-        glRasterPos2f((float)JANELA_W / 2.0f - 105.0f, (float)JANELA_H / 2.0f - 14.0f);
-        for (const char* c = msg2; *c; ++c)
-            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
+        const char* inst = "Escolha uma melhoria pressionando 1, 2 ou 3:";
+        glRasterPos2f((float)JANELA_W / 2.0f - 160.0f, (float)JANELA_H / 2.0f + 30.0f);
+        for (const char* c = inst; *c; ++c) glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
+
+        // Renderiza as opções dinâmicas
+        for (int i = 0; i < jogo.quantidadeOpcoes; ++i) {
+            TipoUpgrade tipoOpt = jogo.opcoesUpgrade[i];
+            int nivelAtual = jogo.protagonista.upgrades.niveis[tipoOpt];
+            
+            sprintf(buf, "[ %d ] - %s (Nivel %d -> %d)", 
+                    i + 1, 
+                    obterNomeUpgrade(tipoOpt), 
+                    nivelAtual, 
+                    nivelAtual + 1);
+            
+            // Destaque em verde se for a melhoria que atinge o Nível 3 (Máximo)
+            if (nivelAtual + 1 == 3) glColor3f(0.2f, 1.0f, 0.2f);
+            else glColor3f(0.6f, 0.8f, 1.0f);
+
+            glRasterPos2f((float)JANELA_W / 2.0f - 140.0f, (float)JANELA_H / 2.0f - (i * 30.0f));
+            for (const char* c = buf; *c; ++c) glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
+        }
     }
 
     glPopMatrix();
@@ -775,6 +805,14 @@ void inicializarJogo() {
     jogo.protagonista.vivo               = true;
     jogo.protagonista.raioColisao        = 0.70f;  // igual à LARGURA visual (P1)
     jogo.protagonista.hp                 = 3;
+    for (int i = 0; i < TOTAL_UPGRADES; ++i) {
+        jogo.protagonista.upgrades.niveis[i] = 0;
+    }
+    jogo.protagonista.hpMaximo          = HP_BASE;
+    jogo.contagemAtributosNivel2        = 0;
+    jogo.disparoEvoluido                = false;
+    jogo.stand.tipoDisparoAtual         = DISPARO_NORMAL;
+    jogo.quantidadeOpcoes               = 0;
     jogo.protagonista.temporizadorIframe = 0.0f;
     jogo.protagonista.duracaoIframe      = 1.2f;
     jogo.protagonista.xpAtual            = 0;
@@ -869,24 +907,32 @@ void redimensionar(int w, int h) {
 void pressionarTecla(unsigned char key, int x, int y) {
     teclasPressionadas[key] = true;
 
-    if (key == ' ') {
-        tentarAtivarParry(jogo.stand);
+    // Se estiver na tela de Level Up, intercepta os números e bloqueia o resto
+    if (jogo.pausadoParaUpgrade) {
+        int escolha = -1;
+        if (key == '1') escolha = 0;
+        if (key == '2') escolha = 1;
+        if (key == '3') escolha = 2;
+
+        if (escolha >= 0 && escolha < jogo.quantidadeOpcoes) {
+            aplicarUpgrade(jogo, jogo.opcoesUpgrade[escolha]);
+            jogo.pausadoParaUpgrade = false;
+            
+            // Sincroniza o timer para evitar "pulos" na física ao despausar
+            tempoAnterior = glutGet(GLUT_ELAPSED_TIME);
+        }
+        return; // Não processa movimentação ou parry enquanto escolhe
     }
 
-    // Fechar tela de Level Up instantaneamente com E
-    if ((key == 'e' || key == 'E') && jogo.pausadoParaUpgrade) {
-        jogo.pausadoParaUpgrade = false;
-        // Sincroniza tempoAnterior para evitar delta gigante após a pausa
-        tempoAnterior = glutGet(GLUT_ELAPSED_TIME);
-        std::cout << "[LEVEL UP] Nivel " << jogo.protagonista.nivel
-                  << " — continuando." << std::endl;
+    if (key == ' ') {
+        tentarAtivarParry(jogo.stand);
     }
 
     if ((key == 'r' || key == 'R') && !jogo.protagonista.vivo) {
         jogo.horda.clear();
         jogo.tirosNaTela.clear();
         jogo.gemas.clear();
-        inicializarJogo();
+        inicializarJogo(); // O reinício agora limpa tudo graças à sua função
     }
 }
 
