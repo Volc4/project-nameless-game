@@ -505,18 +505,19 @@ void desenharHUD() {
     glPushMatrix();
     glLoadIdentity();
 
-// ---- Barra de HP ----
+    // ---- Barra de HP ----
     {
-        int maxHP = jogo.protagonista.hpMaximo; // Valor dinâmico oriundo do upgrade
+        int maxHP = jogo.protagonista.hpMaximo;
         const float BAR_W  = 120.0f;
         const float BAR_H  = 14.0f;
         const float BAR_X  = 12.0f;
         const float BAR_Y  = JANELA_H - 26.0f;
-        
+
         float propHP = (float)jogo.protagonista.hp / (float)maxHP;
         if (propHP < 0.0f) propHP = 0.0f;
         if (propHP > 1.0f) propHP = 1.0f;
 
+        // Fundo
         glColor3f(0.25f, 0.1f, 0.1f);
         glBegin(GL_QUADS);
             glVertex2f(BAR_X,         BAR_Y);
@@ -524,7 +525,8 @@ void desenharHUD() {
             glVertex2f(BAR_X + BAR_W, BAR_Y + BAR_H);
             glVertex2f(BAR_X,         BAR_Y + BAR_H);
         glEnd();
-        
+
+        // Preenchimento
         glColor3f(0.85f, 0.15f, 0.15f);
         glBegin(GL_QUADS);
             glVertex2f(BAR_X,                   BAR_Y);
@@ -532,7 +534,7 @@ void desenharHUD() {
             glVertex2f(BAR_X + BAR_W * propHP,  BAR_Y + BAR_H);
             glVertex2f(BAR_X,                   BAR_Y + BAR_H);
         glEnd();
-        
+
         char buf[32];
         sprintf(buf, "HP  %d/%d", jogo.protagonista.hp, maxHP);
         glColor3f(1.0f, 0.85f, 0.85f);
@@ -542,17 +544,16 @@ void desenharHUD() {
     }
 
     // ---- Barra de Tensão ----
-    // Comportamento do sistema:
-    //   Normal     : sobe ao atirar (18/s), desce em repouso (5/s)
-    //   Sobrecarga : drena sozinha (12/s), disparo bloqueado, dano zero
-    //   Saída      : ao chegar em 0% durante sobrecarga, tudo volta ao normal
+    // Normal     : sobe ao atirar (18/s), desce em repouso (5/s)
+    // Sobrecarga : drena sozinha (12/s), disparo bloqueado, dano zero
+    // Saída      : ao chegar em 0% durante sobrecarga, tudo volta ao normal
     {
         const float BAR_W = 130.0f;
         const float BAR_H = 14.0f;
         const float BAR_X = 12.0f;
         const float BAR_Y = JANELA_H - 48.0f;
 
-        float tensaoReal = jogo.stand.tensaoAtual;  // sempre lido em tempo real
+        float tensaoReal = jogo.stand.tensaoAtual;
         float prop = tensaoReal / 100.0f;
         if (prop < 0.0f) prop = 0.0f;
         if (prop > 1.0f) prop = 1.0f;
@@ -568,7 +569,7 @@ void desenharHUD() {
 
         // Cor do preenchimento:
         //   Normal    : verde (0%) → amarelo (50%) → vermelho (100%)
-        //   Sobrecarga: vermelho pulsante (indicando drenagem ativa)
+        //   Sobrecarga: vermelho pulsante
         float cr, cg, cb;
         if (!jogo.stand.emSobrecarga) {
             cr = prop * 2.0f;           if (cr > 1.0f) cr = 1.0f;
@@ -606,7 +607,7 @@ void desenharHUD() {
         glEnd();
         glLineWidth(1.0f);
 
-        // Texto de estado à direita da barra
+        // Texto de estado
         char buf[64];
         if (jogo.stand.emSobrecarga) {
             sprintf(buf, "SOBRECARGA! %.0f%%", tensaoReal);
@@ -615,7 +616,7 @@ void desenharHUD() {
             sprintf(buf, "Tensao %.0f%% [PARRY!]", tensaoReal);
             glColor3f(0.4f, 1.0f, 0.4f);
         } else if (jogo.atirandoAgora) {
-            sprintf(buf, "Tensao %.0f%% ^", tensaoReal);   // ^ indica subindo
+            sprintf(buf, "Tensao %.0f%% ^", tensaoReal);
             glColor3f(cr, (cg + 0.2f > 1.0f ? 1.0f : cg + 0.2f), 0.2f);
         } else {
             sprintf(buf, "Tensao %.0f%%", tensaoReal);
@@ -625,7 +626,7 @@ void desenharHUD() {
         for (const char* c = buf; *c; ++c)
             glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
 
-        // Indicador extra abaixo: avisa que disparo está bloqueado
+        // Aviso piscante de disparo bloqueado
         if (jogo.stand.emSobrecarga) {
             bool piscaTxt = ((glutGet(GLUT_ELAPSED_TIME) / 400) % 2 == 0);
             if (piscaTxt) {
@@ -636,36 +637,7 @@ void desenharHUD() {
                     glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
             }
         }
-
-            // ---- Tela de Pausa ----
-        if (jogo.jogoPausado && !jogo.pausadoParaUpgrade && jogo.protagonista.vivo) {
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-            glColor4f(0.0f, 0.0f, 0.0f, 0.65f);
-            glBegin(GL_QUADS);
-                glVertex2f(0,        0);
-                glVertex2f(JANELA_W, 0);
-                glVertex2f(JANELA_W, JANELA_H);
-                glVertex2f(0,        JANELA_H);
-            glEnd();
-            glDisable(GL_BLEND);
-
-            const char* msg1 = "JOGO PAUSADO";
-            const char* msg2 = "Pressione P ou ESC para continuar";
-            
-            glColor3f(1.0f, 1.0f, 1.0f);
-            glRasterPos2f((float)JANELA_W / 2.0f - 70.0f, (float)JANELA_H / 2.0f + 10.0f);
-            for (const char* c = msg1; *c; ++c) glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
-            
-            glColor3f(0.7f, 0.7f, 0.7f);
-            glRasterPos2f((float)JANELA_W / 2.0f - 105.0f, (float)JANELA_H / 2.0f - 15.0f);
-            for (const char* c = msg2; *c; ++c) glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
-        }
-
-        glPopMatrix();
-        glMatrixMode(GL_PROJECTION);
-
-    }
+    } // <-- fim do bloco Barra de Tensão (CORREÇÃO: sem glPopMatrix aqui)
 
     // ---- Barra de XP ----
     {
@@ -692,6 +664,7 @@ void desenharHUD() {
             glVertex2f(BAR_X + BAR_W * prop,   BAR_Y + BAR_H);
             glVertex2f(BAR_X,                  BAR_Y + BAR_H);
         glEnd();
+
         char buf[64];
         sprintf(buf, "Nivel %d   XP %d/%d",
                 jogo.protagonista.nivel,
@@ -746,6 +719,31 @@ void desenharHUD() {
             glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
     }
 
+    // ---- Tela de Pausa ----
+    if (jogo.jogoPausado && !jogo.pausadoParaUpgrade && jogo.protagonista.vivo) {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glColor4f(0.0f, 0.0f, 0.0f, 0.65f);
+        glBegin(GL_QUADS);
+            glVertex2f(0,        0);
+            glVertex2f(JANELA_W, 0);
+            glVertex2f(JANELA_W, JANELA_H);
+            glVertex2f(0,        JANELA_H);
+        glEnd();
+        glDisable(GL_BLEND);
+
+        const char* msg1 = "JOGO PAUSADO";
+        const char* msg2 = "Pressione P ou ESC para continuar";
+
+        glColor3f(1.0f, 1.0f, 1.0f);
+        glRasterPos2f((float)JANELA_W / 2.0f - 70.0f, (float)JANELA_H / 2.0f + 10.0f);
+        for (const char* c = msg1; *c; ++c) glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
+
+        glColor3f(0.7f, 0.7f, 0.7f);
+        glRasterPos2f((float)JANELA_W / 2.0f - 105.0f, (float)JANELA_H / 2.0f - 15.0f);
+        for (const char* c = msg2; *c; ++c) glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
+    }
+
     // ---- Tela de morte ----
     if (!jogo.protagonista.vivo) {
         glEnable(GL_BLEND);
@@ -771,14 +769,13 @@ void desenharHUD() {
             glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
     }
 
-    // ---- Tela de Level Up (CORREÇÃO P3) ----
-    // Mostrada enquanto jogo.pausadoParaUpgrade == true.
-    // Instrui o jogador a pressionar E para continuar (tratado em pressionarTecla).
     // ---- Tela de Level Up (Seleção de Melhoria) ----
+    // Mostrada enquanto jogo.pausadoParaUpgrade == true.
+    // Jogador pressiona 1, 2 ou 3 para escolher (tratado em pressionarTecla).
     if (jogo.pausadoParaUpgrade) {
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glColor4f(0.02f, 0.04f, 0.12f, 0.85f); // Fundo mais escuro
+        glColor4f(0.02f, 0.04f, 0.12f, 0.85f);
         glBegin(GL_QUADS);
             glVertex2f(0,        0);
             glVertex2f(JANELA_W, 0);
@@ -791,33 +788,40 @@ void desenharHUD() {
         sprintf(buf, "LEVEL UP!  Nivel %d", jogo.protagonista.nivel);
         glColor3f(1.0f, 0.9f, 0.2f);
         glRasterPos2f((float)JANELA_W / 2.0f - 85.0f, (float)JANELA_H / 2.0f + 60.0f);
-        for (const char* c = buf; *c; ++c) glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
+        for (const char* c = buf; *c; ++c)
+            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
 
         glColor3f(0.85f, 0.85f, 0.85f);
         const char* inst = "Escolha uma melhoria pressionando 1, 2 ou 3:";
         glRasterPos2f((float)JANELA_W / 2.0f - 160.0f, (float)JANELA_H / 2.0f + 30.0f);
-        for (const char* c = inst; *c; ++c) glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
+        for (const char* c = inst; *c; ++c)
+            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
 
         // Renderiza as opções dinâmicas
         for (int i = 0; i < jogo.quantidadeOpcoes; ++i) {
-            TipoUpgrade tipoOpt = jogo.opcoesUpgrade[i];
+            TipoUpgrade tipoOpt  = jogo.opcoesUpgrade[i];
             int nivelAtual = jogo.protagonista.upgrades.niveis[tipoOpt];
-            
-            sprintf(buf, "[ %d ] - %s (Nivel %d -> %d)", 
-                    i + 1, 
-                    obterNomeUpgrade(tipoOpt), 
-                    nivelAtual, 
-                    nivelAtual + 1);
-            
-            // Destaque em verde se for a melhoria que atinge o Nível 3 (Máximo)
-            if (nivelAtual + 1 == 3) glColor3f(0.2f, 1.0f, 0.2f);
-            else glColor3f(0.6f, 0.8f, 1.0f);
 
-            glRasterPos2f((float)JANELA_W / 2.0f - 140.0f, (float)JANELA_H / 2.0f - (i * 30.0f));
-            for (const char* c = buf; *c; ++c) glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
+            sprintf(buf, "[ %d ] - %s (Nivel %d -> %d)",
+                    i + 1,
+                    obterNomeUpgrade(tipoOpt),
+                    nivelAtual,
+                    nivelAtual + 1);
+
+            // Verde se atingir nível máximo, azul claro caso contrário
+            if (nivelAtual + 1 == NIVEL_MAXIMO_UPGRADE)
+                glColor3f(0.2f, 1.0f, 0.2f);
+            else
+                glColor3f(0.6f, 0.8f, 1.0f);
+
+            glRasterPos2f((float)JANELA_W / 2.0f - 140.0f,
+                          (float)JANELA_H / 2.0f - (i * 30.0f));
+            for (const char* c = buf; *c; ++c)
+                glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
         }
     }
 
+    // ---- Restauração das matrizes ----  (CORREÇÃO: sempre ao final, fora de qualquer bloco)
     glPopMatrix();
     glMatrixMode(GL_PROJECTION);
     glPopMatrix();
