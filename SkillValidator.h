@@ -42,23 +42,13 @@ inline void liberar(unsigned long& mask, int tipo) {
 //  MATRIZ DE COMPATIBILIDADE FORMA × MOVIMENTO
 //
 //  1 = combinação permitida, 0 = bloqueada.
-//  Linhas indexadas por FormaType, colunas por MovimentoType.
-//  Ordem das colunas: LIN ORB BOO HOM SPI BOU FAL TEL RND STA
+//  Linhas indexadas por FormaType, colunas por MovimentoType — NA ORDEM REAL
+//  dos enums em SkillTypes.h (corrigida).
+//  Ordem das colunas: LIN HOM ORB BOO BOU SPI FAL TEL RND STA
+//
+//  ODR: declarada extern aqui; definição ÚNICA em SkillTables.cpp.
 // ===========================================================================
-static const bool COMPAT_FORMA_MOV[FORMA_TOTAL][MOV_TOTAL] = {
-/* Projectile */ {1,0,1,1,1,1,0,1,1,0},
-/* Beam       */ {1,0,0,0,0,0,0,1,0,1},
-/* Cone       */ {1,0,0,0,1,0,0,0,0,0},
-/* Arc        */ {0,1,0,0,0,0,0,0,0,1},
-/* Wave       */ {1,0,0,0,0,0,1,0,0,0},
-/* Area       */ {0,0,0,0,0,0,1,1,0,1},
-/* Aura       */ {0,0,0,0,0,0,0,0,0,1},
-/* Prism      */ {1,0,1,1,0,1,0,0,0,0},
-/* Ring       */ {0,1,0,0,0,0,0,0,0,0},
-/* Explosion  */ {0,0,0,0,0,0,0,0,0,1},
-/* Chain      */ {0,0,0,0,0,0,0,0,0,1},
-/* Wall       */ {0,0,0,0,0,0,0,0,0,1}
-};
+extern const bool COMPAT_FORMA_MOV[FORMA_TOTAL][MOV_TOTAL];
 
 inline bool formaMovCompat(FormaType f, MovimentoType m) {
     return COMPAT_FORMA_MOV[f][m];
@@ -91,7 +81,7 @@ inline ResultadoValidacao validarSkill(const SkillData& s,
     for (int i = 0; i < s.numEfeitos; ++i) {
         const EfeitoData& e = s.efeitos[i];
         if (e.tipo == EFE_SPAWNSKILL || e.tipo == EFE_CHAINEXPLOSION) {
-            if (e.idSkillFilha == s.id) return VALID_RECURSAO_SEM_LIMITE;
+            if (e.idSkillSpawn == s.id) return VALID_RECURSAO_SEM_LIMITE;
             if (e.tipo == EFE_CHAINEXPLOSION && e.propagacaoMax <= 0)
                 return VALID_RECURSAO_SEM_LIMITE;
         }

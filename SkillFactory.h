@@ -2,143 +2,128 @@
 #define SKILL_FACTORY_H
 
 // ===========================================================================
-//  SkillFactory.h — Registro central e fábrica de Skills por identificador
-//                   (Fase 5 — Composable Skills, modelo data-driven)
+//  SkillFactory.h — Fábrica de skills por nome ou id
 //
-//  PAPEL
-//  -----
-//  Desacopla NOMES de habilidade do motor. O SkillManager nunca conhece
-//  "Laser" ou "Meteoro"; ele pede à factory uma SkillData por id:
-//      int id = SkillFactory::id("Laser");
-//      SkillData s = SkillFactory::criar(id);
+//  Responsabilidades:
+//    - Guardar um catálogo global de SkillData registradas por nome textual.
+//    - Fornecer criação por id (criar), busca de id por nome (id),
+//      nome por id (nomeDe), total de skills registradas (total).
+//    - RegistrarSkill() é a única entrada de registro; chamada uma vez
+//      em registrarSkillsPadrao() durante a inicialização do jogo.
 //
-//  Cada habilidade é registrada UMA vez como uma SkillData (composição de
-//  componentes-dados: Forma + Movimento + Origem + Efeito). Adicionar uma
-//  habilidade nova = uma chamada RegistrarSkill(...) — nada mais no motor.
+//  A factory NÃO conhece nenhuma skill concreta — elas estão em
+//  SkillRegistry.h. Ela é apenas o repositório.
 //
-//  POR QUE MELHORA ESCALABILIDADE
-//  ------------------------------
-//  Centenas de habilidades viram entradas numa tabela. O núcleo (SkillManager,
-//  executor, colisão, render loop) permanece imutável. É o objetivo
-//  arquitetural da Fase 5 cumprido sem classes de habilidade.
-//
-//  C++98: tabela = array fixo de structs POD + nome em char[]. Sem
-//  unordered_map, sem std::string como chave, sem ponteiros donos.
-//  Busca por nome é linear sobre poucas dezenas de entradas (custo irrelevante,
-//  feita só no registro/lookup inicial, nunca no hot path).
+//  C++98: array fixo, sem std::map, sem std::string (C-strings).
 // ===========================================================================
 
 #include "SkillTypes.h"
-#include "SkillValidator.h"
-#include <cstring>   // strncmp, strncpy
+#include <cstring>   // strncpy, strcmp
 
-#define SKILL_FACTORY_MAX        128   // teto de habilidades registradas
-#define SKILL_NOME_MAX            32    // tamanho máximo de um identificador
+// Número máximo de skills distintas no catálogo
+#define MAX_SKILLS_CATALOGO  128
+// Tamanho máximo do nome de uma skill
+#define SKILL_NOME_MAX        64
 
 // ---------------------------------------------------------------------------
-// EntradaSkill — uma habilidade registrada: nome + template de SkillData.
-//   POD: nome em buffer fixo, SkillData é POD. memcpy-able, serializável.
+// _EntradaFactory — par (nome, SkillData) no catálogo interno
 // ---------------------------------------------------------------------------
-struct EntradaSkill {
+struct _EntradaFactory {
     char      nome[SKILL_NOME_MAX];
-    SkillData modelo;        // template imutável da build
+    SkillData dados;
     bool      ocupada;
 };
 
 // ---------------------------------------------------------------------------
-// SkillFactory — registro estático global (singleton-by-data, sem classe-dona).
-//   Implementado como struct com armazenamento estático acessado por funções
-//   estáticas. Nenhuma instância é necessária.
+// _getCatalogo — catálogo singleton (array estático com guard de acesso).
+//   Evita o problema de inicialização de globais em C++98.
 // ---------------------------------------------------------------------------
+inline _EntradaFactory* _getCatalogo() {
+    static _EntradaFactory catalogo[MAX_SKILLS_CATALOGO];
+    static bool inicializado = false;
+    if (!inicializado) {
+        inicializado = true;
+        for (int i = 0; i < MAX_SKILLS_CATALOGO; ++i) {
+            catalogo[i].ocupada = false;
+            catalogo[i].nome[0] = '\0';
+        }
+    }
+    return catalogo;
+}
+
+inline int& _getTotalRegistradas() {
+    static int total = 0;
+    return total;
+}
+
+// ---------------------------------------------------------------------------
+// RegistrarSkill — registra uma nova skill no catálogo global.
+//   Chamado apenas por registrarSkillsPadrao() (SkillRegistry.h).
+//   Preenche o campo id da SkillData com o índice de registro.
+// ---------------------------------------------------------------------------
+inline void RegistrarSkill(const char* nome, SkillData dados) {
+    _EntradaFactory* cat = _getCatalogo();
+    int& total = _getTotalRegistradas();
+    if (total >= MAX_SKILLS_CATALOGO) return;   // catálogo cheio
+
+    dados.id = total;
+    dados.ativa = true;
+
+    _EntradaFactory& e = cat[total];
+    std::strncpy(e.nome, nome, SKILL_NOME_MAX - 1);
+    e.nome[SKILL_NOME_MAX - 1] = '\0';
+    e.dados   = dados;
+    e.ocupada = true;
+
+    total++;
+}
+
+// ===========================================================================
+//  SkillFactory — namespace de acesso ao catálogo (funções estáticas)
+// ===========================================================================
 struct SkillFactory {
 
-    // Armazenamento. Definido inline (C++98 permite static membro via função).
-    static EntradaSkill* tabela() {
-        static EntradaSkill _tab[SKILL_FACTORY_MAX];
-        return _tab;
-    }
-    static int& contador() {
-        static int _n = 0;
-        return _n;
-    }
-
-    // -----------------------------------------------------------------------
-    // registrar — adiciona/atualiza uma habilidade pelo nome. Retorna o id
-    //   (índice na tabela) ou -1 se a tabela estiver cheia.
-    //   O modelo recebido já deve ser uma SkillData válida (montada por
-    //   composição de componentes). Atribui modelo.id = id para coerência.
-    // -----------------------------------------------------------------------
-    static int registrar(const char* nome, const SkillData& modelo) {
-        // já existe? atualiza.
-        int existente = id(nome);
-        if (existente >= 0) {
-            tabela()[existente].modelo = modelo;
-            tabela()[existente].modelo.id = existente;
-            return existente;
-        }
-        int& n = contador();
-        if (n >= SKILL_FACTORY_MAX) return -1;
-        EntradaSkill& e = tabela()[n];
-        std::strncpy(e.nome, nome, SKILL_NOME_MAX - 1);
-        e.nome[SKILL_NOME_MAX - 1] = '\0';
-        e.modelo    = modelo;
-        e.modelo.id = n;
-        e.ocupada   = true;
-        return n++;
-    }
-
-    // -----------------------------------------------------------------------
-    // id — resolve um identificador textual para índice. -1 se não existe.
-    //   Busca linear (poucas dezenas de entradas; fora do hot path).
-    // -----------------------------------------------------------------------
+    // Devolve o id de uma skill pelo nome (-1 se não encontrada).
     static int id(const char* nome) {
-        EntradaSkill* t = tabela();
-        int n = contador();
-        for (int i = 0; i < n; ++i) {
-            if (!t[i].ocupada) continue;
-            if (std::strncmp(t[i].nome, nome, SKILL_NOME_MAX) == 0)
+        _EntradaFactory* cat = _getCatalogo();
+        int total = _getTotalRegistradas();
+        for (int i = 0; i < total; ++i) {
+            if (cat[i].ocupada && std::strcmp(cat[i].nome, nome) == 0)
                 return i;
         }
         return -1;
     }
 
-    // -----------------------------------------------------------------------
-    // criar — devolve uma CÓPIA do modelo registrado (por id). A cópia é o
-    //   que o SkillManager usa como build ativa; instâncias RuntimeSkill são
-    //   geradas a partir dela. Se id inválido, devolve uma SkillData zerada
-    //   marcada como inativa (fallback seguro, nunca crash).
-    // -----------------------------------------------------------------------
+    // Cria (devolve por valor) a SkillData de um id.
+    // Se o id for inválido, devolve uma SkillData inativa.
     static SkillData criar(int idSkill) {
-        if (idSkill < 0 || idSkill >= contador()) {
-            SkillData vazia;
-            std::memset(&vazia, 0, sizeof(vazia));
-            vazia.ativa = false;
-            return vazia;
+        _EntradaFactory* cat = _getCatalogo();
+        int total = _getTotalRegistradas();
+        if (idSkill < 0 || idSkill >= total || !cat[idSkill].ocupada) {
+            SkillData vazio = buildBase();
+            vazio.ativa = false;
+            return vazio;
         }
-        return tabela()[idSkill].modelo;
+        return cat[idSkill].dados;
     }
 
-    // -----------------------------------------------------------------------
-    // criarPorNome — atalho conveniente (lookup + criar).
-    // -----------------------------------------------------------------------
-    static SkillData criarPorNome(const char* nome) {
-        return criar(id(nome));
-    }
-
-    static int total() { return contador(); }
-
+    // Devolve o nome de uma skill pelo id (string literal ou "?" se inválido).
     static const char* nomeDe(int idSkill) {
-        if (idSkill < 0 || idSkill >= contador()) return "";
-        return tabela()[idSkill].nome;
+        _EntradaFactory* cat = _getCatalogo();
+        int total = _getTotalRegistradas();
+        if (idSkill < 0 || idSkill >= total || !cat[idSkill].ocupada)
+            return "?";
+        return cat[idSkill].nome;
     }
-};
 
-// ---------------------------------------------------------------------------
-// RegistrarSkill — açúcar sintático no estilo pedido pela Fase 5:
-//     RegistrarSkill("Laser", build);
-// ---------------------------------------------------------------------------
-inline int RegistrarSkill(const char* nome, const SkillData& modelo) {
-    return SkillFactory::registrar(nome, modelo);
-}
+    // Número total de skills registradas.
+    static int total() {
+        return _getTotalRegistradas();
+    }
+
+private:
+    // Não instanciável — apenas funções estáticas.
+    SkillFactory();
+};
 
 #endif // SKILL_FACTORY_H

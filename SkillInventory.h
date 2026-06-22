@@ -2,151 +2,212 @@
 #define SKILL_INVENTORY_H
 
 // ===========================================================================
-//  SkillInventory.h — Funções de inventário de skills do jogador (Fase 6)
+//  SkillInventory.h — Gerenciamento do inventário de skills do jogador
 //
-//  ATENÇÃO: As structs InventarioSkills, SkillEstado, AtributosGlobais
-//  são definidas em Entities.h para evitar dependência circular.
-//  Este arquivo contém APENAS as funções inline que as operam.
+//  Responsabilidades:
+//    - Constantes de limite do inventário (espelhadas em Entities.h via
+//      #define para autossuficiência de EstadoDoJogo).
+//    - inicializarInventario(): estado inicial limpo.
+//    - Funções de consulta: estaEquipada(), podeEvolir().
+//    - Funções de modificação: desbloquearSkill(), equiparSkill(),
+//      evoluirSkill(), removerSkill().
+//    - aplicarAtributoGlobal(): atualiza AtributosGlobais do inventário.
 //
-//  Ordem de include obrigatória (já garantida pelo grafo existente):
-//    Entities.h  →  SkillTypes.h  →  SkillFactory.h  →  SkillInventory.h
+//  Utiliza as structs InventarioSkills, SkillEstado e AtributosGlobais
+//  definidas diretamente em Entities.h (para quebrar dependência circular
+//  com SkillTypes.h).
 // ===========================================================================
 
-#include "SkillTypes.h"    // FormaType, EfeitoType, etc.
-#include "SkillFactory.h"  // SkillFactory::id(), nomeDe()
-#include "Entities.h"      // InventarioSkills, SkillEstado, AtributosGlobais
-#include <cstring>
+#include "Entities.h"
+#include <cstring>   // memset
+
+// Constantes de inventário (mesmo valor dos #define em Entities.h)
+static const int MAX_SKILLS_EQUIPADAS = _INV_MAX_EQUIPADAS;   //  6
+static const int MAX_CATALOGO_INV     = _INV_MAX_CATALOGO;    // 128
+static const int NIVEL_MAX_SKILL      = _INV_NIVEL_MAX;       //  5
+static const int MAX_ESCOLHAS_MENU    = _MENU_MAX_ESCOLHAS;   //  3
+static const int ESCOLHA_DESC_MAX     = _ESCOLHA_DESC_MAX;    // 96
+static const int ESCOLHA_SUB_MAX      = _ESCOLHA_SUB_MAX;     // 64
 
 // ---------------------------------------------------------------------------
-// Limites reexportados (mesmos valores que _INV_* em Entities.h)
-// ---------------------------------------------------------------------------
-#define MAX_SKILLS_EQUIPADAS   _INV_MAX_EQUIPADAS
-#define MAX_SKILLS_CATALOGO    _INV_MAX_CATALOGO
-#define NIVEL_MAX_SKILL        _INV_NIVEL_MAX
-
-// ---------------------------------------------------------------------------
-// inicializarAtributosGlobais
-// ---------------------------------------------------------------------------
-inline void inicializarAtributosGlobais(AtributosGlobais& a) {
-    a.bonusDano        = 1.0f;
-    a.bonusVida        = 1.0f;
-    a.bonusVelocidade  = 1.0f;
-    a.bonusTensao      = 1.0f;
-    a.bonusPerfuracao  = 0.0f;
-    a.bonusHPFlat      = 0;
-}
-
-// ---------------------------------------------------------------------------
-// inicializarInventario — zera tudo; coloca a skill "Disparo" (id 0)
-//   como já equipada no slot 0.
+// inicializarInventario — configura o estado inicial limpo.
+//   - Todas as skills bloqueadas, exceto o Disparo (id 0 — desbloqueado
+//     e equipado por padrão no slot 0).
+//   - Atributos globais em 1.0 (multiplicadores neutros).
 // ---------------------------------------------------------------------------
 inline void inicializarInventario(InventarioSkills& inv) {
-    int i;
-    for (i = 0; i < _INV_MAX_CATALOGO; ++i) {
+    // Zera o array de estados
+    for (int i = 0; i < MAX_CATALOGO_INV; ++i) {
         inv.estado[i]      = SKILL_BLOQUEADA;
         inv.nivelSkill[i]  = 0;
     }
-    for (i = 0; i < _INV_MAX_EQUIPADAS; ++i)
+
+    // Nenhum slot ocupado inicialmente
+    for (int i = 0; i < MAX_SKILLS_EQUIPADAS; ++i)
         inv.equipadas[i] = -1;
     inv.numEquipadas = 0;
-    inicializarAtributosGlobais(inv.atributosGlobais);
 
-    // Skill "Disparo" sempre disponível e equipada desde o início
-    int idDisparo = SkillFactory::id("Disparo");
-    if (idDisparo < 0) idDisparo = 0;
-    inv.estado[idDisparo]     = SKILL_EQUIPADA;
-    inv.nivelSkill[idDisparo] = 0;
-    inv.equipadas[0]          = idDisparo;
-    inv.numEquipadas          = 1;
+    // Atributos globais neutros
+    inv.atributosGlobais.bonusDano        = 1.0f;
+    inv.atributosGlobais.bonusVida        = 1.0f;
+    inv.atributosGlobais.bonusVelocidade  = 1.0f;
+    inv.atributosGlobais.bonusTensao      = 1.0f;
+    inv.atributosGlobais.bonusPerfuracao  = 0.0f;
+    inv.atributosGlobais.bonusHPFlat      = 0;
+
+    // Disparo base (id 0): desbloqueado e equipado por padrão
+    // (a factory pode não estar populada ainda; o ProgressionSystem
+    //  chama montarBuildCompleta() depois, o que resolve o slot 0.)
+    inv.estado[0]     = SKILL_EQUIPADA;
+    inv.nivelSkill[0] = 0;
+    inv.equipadas[0]  = 0;
+    inv.numEquipadas  = 1;
 }
 
 // ---------------------------------------------------------------------------
-// estaEquipada
+// limparMenu — reseta o MenuLevelUp entre sorteios.
 // ---------------------------------------------------------------------------
+inline void limparMenu(MenuLevelUp& menu) {
+    menu.quantidade = 0;
+    for (int i = 0; i < MAX_ESCOLHAS_MENU; ++i) {
+        menu.escolhas[i].tipo       = ESCOLHA_NOVA_SKILL;
+        menu.escolhas[i].raridade   = RARIDADE_COMUM;
+        menu.escolhas[i].referencia = -1;
+        menu.escolhas[i].valorExtra = 0;
+        menu.escolhas[i].descricao[0] = '\0';
+        menu.escolhas[i].subtitulo[0] = '\0';
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Consultas
+// ---------------------------------------------------------------------------
+
 inline bool estaEquipada(const InventarioSkills& inv, int idSkill) {
-    for (int i = 0; i < inv.numEquipadas; ++i)
-        if (inv.equipadas[i] == idSkill) return true;
-    return false;
+    if (idSkill < 0 || idSkill >= MAX_CATALOGO_INV) return false;
+    return inv.estado[idSkill] == SKILL_EQUIPADA ||
+           inv.estado[idSkill] == SKILL_EVOLUIDA  ||
+           inv.estado[idSkill] == SKILL_NIVEL_MAX;
 }
 
-// ---------------------------------------------------------------------------
-// podeEvolir
-// ---------------------------------------------------------------------------
 inline bool podeEvolir(const InventarioSkills& inv, int idSkill) {
-    if (idSkill < 0 || idSkill >= _INV_MAX_CATALOGO) return false;
-    return estaEquipada(inv, idSkill) &&
-           inv.nivelSkill[idSkill] < _INV_NIVEL_MAX;
+    if (idSkill < 0 || idSkill >= MAX_CATALOGO_INV) return false;
+    if (!estaEquipada(inv, idSkill)) return false;
+    return inv.nivelSkill[idSkill] < NIVEL_MAX_SKILL;
 }
 
 // ---------------------------------------------------------------------------
-// desbloquearSkill
+// Modificações
 // ---------------------------------------------------------------------------
+
+// Desbloqueia uma skill (passa de BLOQUEADA para DISPONIVEL).
 inline void desbloquearSkill(InventarioSkills& inv, int idSkill) {
-    if (idSkill < 0 || idSkill >= _INV_MAX_CATALOGO) return;
+    if (idSkill < 0 || idSkill >= MAX_CATALOGO_INV) return;
     if (inv.estado[idSkill] == SKILL_BLOQUEADA)
         inv.estado[idSkill] = SKILL_DISPONIVEL;
 }
 
-// ---------------------------------------------------------------------------
-// equiparSkill
-// ---------------------------------------------------------------------------
+// Equipa uma skill no próximo slot livre, se houver espaço.
 inline bool equiparSkill(InventarioSkills& inv, int idSkill) {
-    if (idSkill < 0 || idSkill >= _INV_MAX_CATALOGO) return false;
-    for (int i = 0; i < inv.numEquipadas; ++i)
-        if (inv.equipadas[i] == idSkill) return false;
+    if (idSkill < 0 || idSkill >= MAX_CATALOGO_INV) return false;
+    if (inv.numEquipadas >= MAX_SKILLS_EQUIPADAS)   return false;
+    if (estaEquipada(inv, idSkill))                 return false; // já equipada
 
-    if (inv.numEquipadas < _INV_MAX_EQUIPADAS) {
-        inv.equipadas[inv.numEquipadas++] = idSkill;
-    } else {
-        inv.equipadas[_INV_MAX_EQUIPADAS - 1] = idSkill;
-    }
-    inv.estado[idSkill] = SKILL_EQUIPADA;
+    // Garante que está pelo menos DISPONIVEL antes de equipar
+    if (inv.estado[idSkill] == SKILL_BLOQUEADA)
+        inv.estado[idSkill] = SKILL_DISPONIVEL;
+
+    inv.equipadas[inv.numEquipadas] = idSkill;
+    inv.numEquipadas++;
+    inv.estado[idSkill]     = SKILL_EQUIPADA;
+    inv.nivelSkill[idSkill] = 0;
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// evoluirSkill
-// ---------------------------------------------------------------------------
-inline int evoluirSkill(InventarioSkills& inv, int idSkill) {
-    if (idSkill < 0 || idSkill >= _INV_MAX_CATALOGO) return -1;
-    if (inv.nivelSkill[idSkill] >= _INV_NIVEL_MAX) return -1;
+// Evolui uma skill equipada (incrementa nível, atualiza estado).
+inline bool evoluirSkill(InventarioSkills& inv, int idSkill) {
+    if (!podeEvolir(inv, idSkill)) return false;
 
     inv.nivelSkill[idSkill]++;
-    int novo = inv.nivelSkill[idSkill];
-    inv.estado[idSkill] = (novo >= _INV_NIVEL_MAX) ? SKILL_NIVEL_MAX : SKILL_EVOLUIDA;
-    return novo;
+    if (inv.nivelSkill[idSkill] >= NIVEL_MAX_SKILL)
+        inv.estado[idSkill] = SKILL_NIVEL_MAX;
+    else
+        inv.estado[idSkill] = SKILL_EVOLUIDA;
+    return true;
+}
+
+// Remove uma skill do slot de equipadas (volta a DISPONIVEL).
+inline bool removerSkill(InventarioSkills& inv, int idSkill) {
+    if (idSkill < 0 || idSkill >= MAX_CATALOGO_INV) return false;
+    if (!estaEquipada(inv, idSkill)) return false;
+
+    // Procura o slot
+    for (int i = 0; i < inv.numEquipadas; ++i) {
+        if (inv.equipadas[i] == idSkill) {
+            // Remove com swap-and-pop
+            inv.equipadas[i] = inv.equipadas[inv.numEquipadas - 1];
+            inv.equipadas[inv.numEquipadas - 1] = -1;
+            inv.numEquipadas--;
+            inv.estado[idSkill] = SKILL_DISPONIVEL;
+            return true;
+        }
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
-// aplicarAtributoGlobal
+// aplicarAtributoGlobal — atualiza os AtributosGlobais do inventário
+//   conforme o TipoUpgrade escolhido pelo jogador.
 // ---------------------------------------------------------------------------
-inline void aplicarAtributoGlobal(InventarioSkills& inv, TipoUpgrade tipo, int nivel) {
+inline void aplicarAtributoGlobal(InventarioSkills& inv,
+                                   TipoUpgrade tipo, int /*vezes*/) {
     AtributosGlobais& a = inv.atributosGlobais;
     switch (tipo) {
         case DANO:
-            a.bonusDano *= (1.0f + 0.10f * nivel);
-            break;
-        case VIDA:
-            a.bonusVida *= (1.0f + 0.15f * nivel);
-            a.bonusHPFlat += nivel;
-            break;
-        case VELOCIDADE:
-            a.bonusVelocidade *= (1.0f + 0.20f * nivel);
-            break;
-        case TENSAO_UP:
-            a.bonusTensao *= (1.0f - 0.10f * nivel);
-            if (a.bonusTensao < 0.1f) a.bonusTensao = 0.1f;
-            break;
-        case PERFURACAO:
-            a.bonusPerfuracao += (float)nivel;
+            a.bonusDano += 0.10f;          // +10% dano
             break;
         case CADENCIA:
-            a.bonusTensao *= (1.0f - 0.05f * nivel);
-            if (a.bonusTensao < 0.1f) a.bonusTensao = 0.1f;
+            a.bonusTensao -= 0.05f;        // −5% custo tensão (multiplicador)
+            if (a.bonusTensao < 0.10f) a.bonusTensao = 0.10f;
+            break;
+        case PERFURACAO:
+            a.bonusPerfuracao += 1.0f;     // +1 perfuração flat
+            break;
+        case TENSAO_UP:
+            a.bonusTensao -= 0.10f;        // −10% custo tensão
+            if (a.bonusTensao < 0.05f) a.bonusTensao = 0.05f;
+            break;
+        case VELOCIDADE:
+            a.bonusVelocidade += 0.20f;    // +20% velocidade de movimento
+            break;
+        case VIDA:
+            a.bonusVida  += 0.15f;         // +15% HP
+            a.bonusHPFlat += 1;
             break;
         default:
             break;
     }
 }
+
+// ---------------------------------------------------------------------------
+// corRaridade — devolve cor RGB de uma raridade de escolha.
+//   Usado no render do menu de level-up (Main.cpp).
+// ---------------------------------------------------------------------------
+inline void corRaridade(EscolhaRaridade r, float& R, float& G, float& B) {
+    switch (r) {
+        case RARIDADE_COMUM:    R = 0.80f; G = 0.80f; B = 0.80f; break; // cinza
+        case RARIDADE_INCOMUM:  R = 0.20f; G = 0.80f; B = 0.20f; break; // verde
+        case RARIDADE_RARA:     R = 0.20f; G = 0.40f; B = 1.00f; break; // azul
+        case RARIDADE_EPICA:    R = 0.60f; G = 0.10f; B = 0.90f; break; // roxo
+        case RARIDADE_LENDARIA: R = 1.00f; G = 0.65f; B = 0.00f; break; // ouro
+        default:                R = 1.00f; G = 1.00f; B = 1.00f; break;
+    }
+}
+
+// Alias compatível com a chamada em ProgressionSystem.h
+inline void aplicarEscolhaMenu(EstadoDoJogo& jogo, int indiceEscolha);
+// (Definida em ProgressionSystem.h via aplicarEscolhaLevelUp — aqui apenas
+//  declarada para que código legacy que use este nome compile. A implementação
+//  real está em ProgressionSystem.h e chama aplicarEscolhaLevelUp.)
 
 #endif // SKILL_INVENTORY_H

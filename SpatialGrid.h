@@ -90,37 +90,12 @@ inline bool jaAcertouEsteZumbi_sg(const int* arr, int qtd, int idx) {
 //  processarColisoesSkills_Grade em SkillManager.h, motor data-driven.)
 
 // ---------------------------------------------------------------------------
-// processarColisaoZumbiJogador_Grade — SEM MUDANÇAS
+// processarColisaoZumbiJogador_Grade — implementada em Main.cpp
+// (a definição inline foi removida para evitar ODR violation: Main.cpp
+//  precisa acessar g_jogoTerminado, portanto é a única TU que a define.)
 // ---------------------------------------------------------------------------
-inline void processarColisaoZumbiJogador_Grade(EstadoDoJogo& jogo,
-                                                GradeEspacial& grade,
-                                                float deltaTime) {
-    Jogador& jog = jogo.protagonista;
-    if (!jog.vivo) return;
-
-    if (jog.temporizadorIframe > 0.0f) {
-        jog.temporizadorIframe -= deltaTime;
-        if (jog.temporizadorIframe < 0.0f) jog.temporizadorIframe = 0.0f;
-    }
-
-    std::vector<int> candidatos;
-    candidatos.reserve(32);
-    grade.obterInimigosVizinhos(jog.posicao.x, jog.posicao.z, candidatos);
-
-    for (int k = 0; k < (int)candidatos.size(); ++k) {
-        int i = candidatos[k];
-        Zumbi& z = jogo.horda[i];
-        if (!z.vivo) continue;
-
-        if (verificarColisao(jog.posicao, jog.raioColisao,
-                             z.posicao,   z.raioColisao)) {
-            if (jog.temporizadorIframe <= 0.0f) {
-                jog.hp -= 1;
-                jog.temporizadorIframe = jog.duracaoIframe;
-                if (jog.hp <= 0) jog.vivo = false;
-            }
-        }
-    }
-}
+void processarColisaoZumbiJogador_Grade(EstadoDoJogo& jogo,
+                                        GradeEspacial& grade,
+                                        float deltaTime);
 
 #endif // SPATIAL_GRID_UPDATED_H

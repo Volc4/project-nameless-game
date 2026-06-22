@@ -1,118 +1,212 @@
 // =============================================================================
-//  Fase 3 — Feature Flag
-//  Comente a linha abaixo para voltar ao motor original sem nenhuma alteração.
+//  Main.cpp — Loop principal data-driven (Fase 6.5)
+//
+//  ARQUITETURA
+//  -----------
+//  O jogo usa OpenGL/GLUT para renderização e entrada. A lógica está
+//  distribuída nos headers data-driven; este arquivo é o host que:
+//    1. Define as funções "contrato" exigidas por SkillExecutor.h
+//    2. Implementa as primitivas de desenho exigidas por SkillRender.h
+//    3. Mantém o EstadoDoJogo global e o SkillManager global
+//    4. Inicializa o catálogo (registrarSkillsPadrao) e o inventário
+//    5. Implementa os callbacks GLUT: display, idle, mouse, keyboard
+//    6. Gerencia os menus de level-up e a câmera isométrica
+//
+//  ORDEM DE INCLUDES (crítica para evitar ciclos):
+//    Entities.h  →  SkillTypes.h (inclui RuntimeSkill.h)
+//    SkillManager.h (inclui SpatialGrid.h ao final, após a forward decl)
+//    ProgressionSystem.h (inclui tudo da progressão)
+//    GameLogic.h (lógica de jogo: spawn, XP, colisão jogador-zumbi)
+//    SpatialGrid.h (grade espacial; já incluída por SkillManager.h)
+//    SkillRender.h (desenho data-driven)
+//    SkillRegistry.h (catálogo de skills concretas)
 // =============================================================================
 
-// =============================================================================
-//  Stand Survivor — Main.cpp
-//  Renderização isométrica 3D clássica com OpenGL/GLUT
-//
-//  Câmera: projeção ortográfica + rotação 45° em Y + 35.264° em X
-//  Toda lógica de jogo preservada de GameLogic.h / Entities.h / MathUtils.h
-//
-//  CORREÇÕES APLICADAS:
-//    P1 — Hitbox alinhada ao tamanho visual de cada cubo
-//    P2 — Chão calculado dinamicamente para cobrir toda a câmera
-//    P3 — Pausa instantânea no frame exato do level up, sem timer artificial
-//    P4 — Normalização vetorial correta do movimento (velocidade idêntica em toda direção)
-//    P5 — HUD de tensão com clamp, borda de sobrecarga e sincronização em tempo real
-// =============================================================================
+// --- OpenGL/GLUT -------------------------------------------------------------
+#ifdef __APPLE__
+#  include <GLUT/glut.h>
+#else
+#  include <GL/glut.h>
+#endif
 
-#include <GL/glut.h>
-#include "GameLogic.h"
-#include "SpatialGrid.h"
-#include "SkillRender.h"     // Fase 5: render despachado pela Forma
-#include "ProgressionSystem.h"
-#include "SkillRegistry.h"   // Fase 5: registro central de skills nomeadas
-#include <iostream>
+// --- Cabeçalhos do projeto ---------------------------------------------------
+#include "Entities.h"
+#include "SkillTypes.h"        // FormaType, MovimentoType…  + RuntimeSkill.h
+#include "SkillFactory.h"
+#include "SkillCatalog.h"
+#include "SkillInventory.h"
+#include "SkillRegistry.h"     // registrarSkillsPadrao()
+#include "MathUtils.h"         // calcularDistanciaQuadrada, verificarColisao…
+#include "SkillExecutor.h"     // executarSkill, resolverEfeitos…
+#include "SkillManager.h"      // SkillManager + SpatialGrid.h (incluído internamente)
+#include "ProgressionSystem.h" // montarBuildCompleta, sortearRecompensas…
+#include "SkillRender.h"       // desenharSkill, desenharTodasSkills
+
+// --- STL / CRT ---------------------------------------------------------------
+#include <vector>
+#include <cstdlib>
 #include <cstdio>
+#include <cstring>
 #include <cmath>
+#include <ctime>
+
+// =============================================================================
+//  CONSTANTES GLOBAIS
+// =============================================================================
+
+static const float ARENA_HALF   = 150.0f;   // metade do lado da arena quadrada
+static const float CAM_DIST     = 30.0f;    // distância da câmera ao ponto focal
+static const float CAM_ANGLE_X  = 45.0f;   // inclinação da câmera (graus)
+static const int   JANELA_W     = 1024;
+static const int   JANELA_H     = 768;
+
+// Constante exigida por SkillExecutor.h (extern)
+const float FATOR_DANO_SOBRECARGA = 2.5f;
+
+// =============================================================================
+//  ESTADO GLOBAL
+// =============================================================================
+
+static EstadoDoJogo  g_jogo;
+static SkillManager  g_skills;
+static GradeEspacial g_grade;
+
+// Posição do cursor no mundo (plano XZ, y=0) — atualizada pelo mouse
+static Vetor3D g_posicaoCursor = {0.0f, 0.0f, 0.0f};
+
+// Teclas pressionadas
+static bool g_teclaW = false, g_teclaA = false,
+            g_teclaS = false, g_teclaD = false;
+
+// Botão esquerdo do mouse pressionado (disparo contínuo)
+static bool g_cliqueMouse = false;
+
+// Flag de estado
+static bool g_jogoTerminado = false;
+
+// =============================================================================
+//  PROTÓTIPOS INTERNOS
+// =============================================================================
+
+static void inicializarEstadoJogo();
+static void atualizarJogador(float dt);
+static void atualizarZumbis(float dt);
+static void spawnarZumbi();
+static void atualizarParticulas(float dt);
+static void atualizarFloatingDamage(float dt);
+static void desenharCena();
+static void desenharHUD();
+static void desenharMenuLevelUp();
+static Vetor3D projetarMouseNoMundo(int mx, int my);
+
+// =============================================================================
+//  FUNÇÕES "CONTRATO" EXIGIDAS POR SkillExecutor.h
+//  (declaradas extern lá; definidas aqui)
+// =============================================================================
 
 // ---------------------------------------------------------------------------
-// Estado global
+// processarMorteZumbi — concede XP, registra posição, marca morto.
 // ---------------------------------------------------------------------------
-EstadoDoJogo jogo;
-GradeEspacial gradeEspacial;
-SkillManager skillManager;
-int tempoAnterior = 0;
-bool teclasPressionadas[256] = {false};
-bool disparouNesteFrame = false;  // setado em cliqueMouse, lido e limpo em timer()
+void processarMorteZumbi(EstadoDoJogo& jogo, Zumbi& z) {
+    if (!z.vivo) return;
+    z.vivo = false;
 
-static int JANELA_W = 900;
-static int JANELA_H = 900;
+    // XP por tipo
+    int xp = 5;
+    switch (z.tipo) {
+        case RAPIDO:    xp =  8; break;
+        case TANK:      xp = 15; break;
+        case ATIRADOR:  xp = 12; break;
+        case EXPLOSIVO: xp = 10; break;
+        default:        xp =  5; break;
+    }
+    jogo.protagonista.xpAtual += xp;
 
-// ---------------------------------------------------------------------------
-// Parâmetros da câmera isométrica REAL
-// ---------------------------------------------------------------------------
-static const float CAM_ANGULO_Y   = 45.0f;
-static const float CAM_ANGULO_X   = 35.264f;
-static const float CAM_ORTHO      = 18.0f;
-static const float CAM_Z_NEAR     = -300.0f;
-static const float CAM_Z_FAR      =  300.0f;
+    // Gema de XP
+    GemaXP gema;
+    gema.posicao  = z.posicao;
+    gema.valorXP  = xp;
+    gema.coletada = false;
+    jogo.gemas.push_back(gema);
 
-// ---------------------------------------------------------------------------
-// Matrizes gravadas para conversão de clique → mundo
-// ---------------------------------------------------------------------------
-static GLdouble matModelview[16];
-static GLdouble matProjection[16];
-static GLint    viewport[4];
+    // Hook para ORIG_KILLEDENEMY
+    jogo.ultimaPosicaoMorte = z.posicao;
+    jogo.houveMorteRecente  = true;
 
-void gravarMatrizes() {
-    glGetDoublev(GL_MODELVIEW_MATRIX,  matModelview);
-    glGetDoublev(GL_PROJECTION_MATRIX, matProjection);
-    glGetIntegerv(GL_VIEWPORT,         viewport);
+    // Verifica level-up
+    while (jogo.protagonista.xpAtual >= jogo.protagonista.xpParaProximoNivel) {
+        jogo.protagonista.xpAtual      -= jogo.protagonista.xpParaProximoNivel;
+        jogo.protagonista.xpParaProximoNivel =
+            (int)(jogo.protagonista.xpParaProximoNivel * 1.4f);
+        jogo.protagonista.nivel++;
+
+        sortearRecompensas(jogo.menuAtual, jogo.inventario);
+        jogo.pausadoParaUpgrade = true;
+        jogo.jogoPausado        = true;
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Converte pixel de tela → ponto no plano Y=0 do mundo
+// criarFloatingDamage — número de dano flutuante visual.
 // ---------------------------------------------------------------------------
-Vetor3D cliqueParaMundo(int px, int py) {
-    float syGL = (float)(viewport[3] - py);
-
-    GLdouble wx0, wy0, wz0;
-    GLdouble wx1, wy1, wz1;
-    gluUnProject(px, syGL, 0.0, matModelview, matProjection, viewport,
-                 &wx0, &wy0, &wz0);
-    gluUnProject(px, syGL, 1.0, matModelview, matProjection, viewport,
-                 &wx1, &wy1, &wz1);
-
-    float dy = (float)(wy1 - wy0);
-    float t  = (dy != 0.0f) ? (float)(-wy0 / dy) : 0.0f;
-
-    Vetor3D resultado;
-    resultado.x = (float)(wx0 + t * (wx1 - wx0));
-    resultado.y = 0.0f;
-    resultado.z = (float)(wz0 + t * (wz1 - wz0));
-    return resultado;
+void criarFloatingDamage(EstadoDoJogo& jogo, Vetor3D pos, int dano) {
+    FloatingDamage fd;
+    fd.posicao              = pos;
+    fd.valorDano            = dano;
+    fd.tempoRestante        = 1.2f;
+    fd.tempoTotal           = 1.2f;
+    fd.deslocamentoVertical = 0.0f;
+    fd.corR = 1.0f; fd.corG = 0.9f; fd.corB = 0.1f;
+    fd.transparencia = 1.0f;
+    jogo.numerosFlutuantes.push_back(fd);
 }
 
 // ---------------------------------------------------------------------------
-// Aplica a transformação de câmera isométrica no ModelView
+// criarParticulasMorte — burst de partículas coloridas.
 // ---------------------------------------------------------------------------
-void aplicarCameraIsometrica() {
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-
-    glRotatef(CAM_ANGULO_X, 1.0f, 0.0f, 0.0f);
-    glRotatef(CAM_ANGULO_Y, 0.0f, 1.0f, 0.0f);
-
-    glTranslatef(-jogo.protagonista.posicao.x,
-                  0.0f,
-                 -jogo.protagonista.posicao.z);
+void criarParticulasMorte(EstadoDoJogo& jogo, Vetor3D pos,
+                          float cR, float cG, float cB) {
+    const int N = 8;
+    for (int i = 0; i < N; ++i) {
+        Particula p;
+        p.posicao  = pos;
+        float ang  = (float)(rand() % 360) * (3.14159265f / 180.0f);
+        float vel  = 3.0f + (rand() % 50) * 0.1f;
+        p.velocidade.x = std::cos(ang) * vel;
+        p.velocidade.y = 2.0f + (rand() % 30) * 0.1f;
+        p.velocidade.z = std::sin(ang) * vel;
+        p.tempoVida       = 0.4f + (rand() % 40) * 0.01f;
+        p.tempoVidaMaximo = p.tempoVida;
+        p.corR = cR; p.corG = cG; p.corB = cB;
+        p.tamanho       = 0.15f + (rand() % 20) * 0.01f;
+        p.transparencia = 1.0f;
+        p.ativa = true;
+        jogo.particulas.push_back(p);
+    }
 }
 
 // ---------------------------------------------------------------------------
-// desenharBloco3D — renderiza um bloco com 5 faces visíveis (topo + 4 laterais)
-//
-//  Parâmetros:
-//    cx, cy_base, cz — centro X, base Y, centro Z
-//    lx, lz          — meia-largura em X e Z
-//    altura          — altura total em Y
-//    rT/gT/bT        — topo         (mais iluminado)
-//    rF/gF/bF        — frente  Z-   (iluminação média)
-//    rB/gB/bB        — trás    Z+   (mais escuro)
-//    rR/gR/bR        — direita  X+  (intermediário)
-//    rL/gL/bL        — esquerda X-  (escuro)
+// obterCorBaseZumbi — cor RGB por tipo de zumbi (usada em partículas).
+// ---------------------------------------------------------------------------
+void obterCorBaseZumbi(TipoZumbi tipo, float& cR, float& cG, float& cB) {
+    switch (tipo) {
+        case RAPIDO:    cR = 0.2f; cG = 0.9f; cB = 0.3f; break;
+        case TANK:      cR = 0.6f; cG = 0.1f; cB = 0.1f; break;
+        case ATIRADOR:  cR = 0.9f; cG = 0.6f; cB = 0.1f; break;
+        case EXPLOSIVO: cR = 1.0f; cG = 0.3f; cB = 0.0f; break;
+        default:        cR = 0.2f; cG = 0.7f; cB = 0.2f; break;
+    }
+}
+
+// =============================================================================
+//  PRIMITIVAS DE DESENHO  — exigidas por SkillRender.h
+//  (declaradas extern lá; definidas aqui)
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+// desenharBloco3D — cubo colorido nas 4 faces laterais + topo.
+//   cx,cy_base,cz : centro na base; lx,lz,altura : dimensões.
+//   Ordem de cores: Topo, Frente (Z+), Trás (Z-), Direita (X+), Esquerda (X-).
 // ---------------------------------------------------------------------------
 void desenharBloco3D(float cx, float cy_base, float cz,
                      float lx, float lz, float altura,
@@ -122,1097 +216,900 @@ void desenharBloco3D(float cx, float cy_base, float cz,
                      float rR, float gR, float bR,
                      float rL, float gL, float bL)
 {
-    float x0 = cx - lx;
-    float x1 = cx + lx;
-    float z0 = cz - lz;
-    float z1 = cz + lz;
-    float y0 = cy_base;
-    float y1 = cy_base + altura;
+    float x0 = cx - lx * 0.5f, x1 = cx + lx * 0.5f;
+    float y0 = cy_base,         y1 = cy_base + altura;
+    float z0 = cz - lz * 0.5f, z1 = cz + lz * 0.5f;
 
-    // Topo
-    glColor3f(rT, gT, bT);
     glBegin(GL_QUADS);
-        glVertex3f(x0, y1, z0);
-        glVertex3f(x1, y1, z0);
-        glVertex3f(x1, y1, z1);
-        glVertex3f(x0, y1, z1);
-    glEnd();
-
-    // Frente (Z negativo)
-    glColor3f(rF, gF, bF);
-    glBegin(GL_QUADS);
-        glVertex3f(x0, y0, z0);
-        glVertex3f(x1, y0, z0);
-        glVertex3f(x1, y1, z0);
-        glVertex3f(x0, y1, z0);
-    glEnd();
-
-    // Trás (Z positivo)
-    glColor3f(rB, gB, bB);
-    glBegin(GL_QUADS);
-        glVertex3f(x0, y0, z1);
-        glVertex3f(x1, y0, z1);
-        glVertex3f(x1, y1, z1);
-        glVertex3f(x0, y1, z1);
-    glEnd();
-
-    // Direita (X positivo)
-    glColor3f(rR, gR, bR);
-    glBegin(GL_QUADS);
-        glVertex3f(x1, y0, z0);
-        glVertex3f(x1, y0, z1);
-        glVertex3f(x1, y1, z1);
-        glVertex3f(x1, y1, z0);
-    glEnd();
-
-    // Esquerda (X negativo)
-    glColor3f(rL, gL, bL);
-    glBegin(GL_QUADS);
-        glVertex3f(x0, y0, z0);
-        glVertex3f(x0, y0, z1);
-        glVertex3f(x0, y1, z1);
-        glVertex3f(x0, y1, z0);
+        // Topo
+        glColor3f(rT, gT, bT);
+        glVertex3f(x0, y1, z0); glVertex3f(x1, y1, z0);
+        glVertex3f(x1, y1, z1); glVertex3f(x0, y1, z1);
+        // Frente (Z+)
+        glColor3f(rF, gF, bF);
+        glVertex3f(x0, y0, z1); glVertex3f(x1, y0, z1);
+        glVertex3f(x1, y1, z1); glVertex3f(x0, y1, z1);
+        // Trás (Z-)
+        glColor3f(rB, gB, bB);
+        glVertex3f(x1, y0, z0); glVertex3f(x0, y0, z0);
+        glVertex3f(x0, y1, z0); glVertex3f(x1, y1, z0);
+        // Direita (X+)
+        glColor3f(rR, gR, bR);
+        glVertex3f(x1, y0, z1); glVertex3f(x1, y0, z0);
+        glVertex3f(x1, y1, z0); glVertex3f(x1, y1, z1);
+        // Esquerda (X-)
+        glColor3f(rL, gL, bL);
+        glVertex3f(x0, y0, z0); glVertex3f(x0, y0, z1);
+        glVertex3f(x0, y1, z1); glVertex3f(x0, y1, z0);
     glEnd();
 }
 
 // ---------------------------------------------------------------------------
-// Sombra projetada no chão — quad preto semitransparente em y~0
-// Requer GL_BLEND habilitado pelo chamador.
-// ---------------------------------------------------------------------------
-void desenharSombra(float cx, float cz, float rx, float rz) {
-    float x0 = cx - rx;
-    float x1 = cx + rx;
-    float z0 = cz - rz;
-    float z1 = cz + rz;
-    float y  = 0.005f;
-
-    glColor4f(0.0f, 0.0f, 0.0f, 0.45f);
-    glBegin(GL_QUADS);
-        glVertex3f(x0, y, z0);
-        glVertex3f(x1, y, z0);
-        glVertex3f(x1, y, z1);
-        glVertex3f(x0, y, z1);
-    glEnd();
-}
-
-// ---------------------------------------------------------------------------
-// CORREÇÃO P2 — Chão com tiles de espessura, cobertura dinâmica
-//
-//  O raio de tiles visíveis é calculado a partir do volume ortográfico da
-//  câmera e do ângulo de rotação, garantindo que o chão cubra toda a janela
-//  independente de resolução ou posição do jogador.
-//
-//  Raciocínio:
-//    - O volume ortográfico em Y cobre ±CAM_ORTHO unidades de tela.
-//    - Com câmera 45°Y + 35.264°X, o eixo mais "esticado" no plano XZ
-//      corresponde a aproximadamente CAM_ORTHO * aspecto * sqrt(2) unidades
-//      de mundo. Multiplicamos por um fator de segurança (1.5) para cobrir
-//      bordas diagonais e movimento.
-//    - Somamos 4 tiles extras de margem para eliminar qualquer pop-in.
-// ---------------------------------------------------------------------------
-void desenharChao() {
-    const float TILE_H = 0.18f;
-    const float HALF   = 0.5f;
-
-    float aspecto = (JANELA_H > 0) ? (float)JANELA_W / (float)JANELA_H : 1.0f;
-
-    // Raio dinâmico: volume ortográfico * diagonal isométrica * margem
-    // A câmera 45°Y estica tiles na diagonal, multiplicamos por sqrt(2).
-    // O fator 1.6 é a margem de segurança para nunca mostrar o fundo.
-    int raio = (int)ceilf(CAM_ORTHO * (aspecto > 1.0f ? aspecto : 1.0f) * 1.4142f * 1.6f) + 4;
-
-    float px = jogo.protagonista.posicao.x;
-    float pz = jogo.protagonista.posicao.z;
-    int ox = (int)floorf(px);
-    int oz = (int)floorf(pz);
-
-    for (int gx = ox - raio; gx <= ox + raio; gx++) {
-        for (int gz = oz - raio; gz <= oz + raio; gz++) {
-            int par = ((gx % 2 + 2) % 2) ^ ((gz % 2 + 2) % 2);
-
-            float cT  = par ? 0.22f : 0.16f;
-            float cTg = par ? 0.23f : 0.17f;
-
-            float cx  = (float)gx;
-            float cz_ = (float)gz;
-
-            // Face superior
-            glColor3f(cT, cTg, cT);
-            glBegin(GL_QUADS);
-                glVertex3f(cx - HALF, TILE_H, cz_ - HALF);
-                glVertex3f(cx + HALF, TILE_H, cz_ - HALF);
-                glVertex3f(cx + HALF, TILE_H, cz_ + HALF);
-                glVertex3f(cx - HALF, TILE_H, cz_ + HALF);
-            glEnd();
-
-            // Frente (Z negativo)
-            float cF = cT * 0.60f;
-            glColor3f(cF, cF + 0.01f, cF);
-            glBegin(GL_QUADS);
-                glVertex3f(cx - HALF, 0.0f,   cz_ - HALF);
-                glVertex3f(cx + HALF, 0.0f,   cz_ - HALF);
-                glVertex3f(cx + HALF, TILE_H,  cz_ - HALF);
-                glVertex3f(cx - HALF, TILE_H,  cz_ - HALF);
-            glEnd();
-
-            // Lado direito (X positivo)
-            float cR = cT * 0.75f;
-            glColor3f(cR, cR + 0.01f, cR);
-            glBegin(GL_QUADS);
-                glVertex3f(cx + HALF, 0.0f,   cz_ - HALF);
-                glVertex3f(cx + HALF, 0.0f,   cz_ + HALF);
-                glVertex3f(cx + HALF, TILE_H,  cz_ + HALF);
-                glVertex3f(cx + HALF, TILE_H,  cz_ - HALF);
-            glEnd();
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Anel no chão indicando raio do Parry ativo
-// ---------------------------------------------------------------------------
-void desenharAroParry(float cx, float cz, float raio) {
-    const int SEG = 48;
-    const float PI2 = 2.0f * 3.14159265f;
-    glColor4f(0.0f, 0.9f, 0.9f, 0.7f);
-    glLineWidth(2.5f);
-    glBegin(GL_LINE_LOOP);
-    for (int i = 0; i < SEG; ++i) {
-        float ang = (float)i / (float)SEG * PI2;
-        glVertex3f(cx + raio * cosf(ang), 0.22f, cz + raio * sinf(ang));
-    }
-    glEnd();
-    glLineWidth(1.0f);
-}
-
-// ---------------------------------------------------------------------------
-// Renderização do jogador
-//
-//  CORREÇÃO P1: raioColisao do jogador = 0.70 (= LARGURA visual).
-//  O valor é definido em inicializarJogo() onde jog.raioColisao = 0.70f.
-// ---------------------------------------------------------------------------
-void desenharJogador() {
-    if (!jogo.protagonista.vivo) return;
-
-    const float BASE_Y  = 0.18f;
-    const float LARGURA = 0.7f;   // meia-largura — igual ao raioColisao definido em inicializarJogo
-    const float ALTURA  = 1.8f;
-
-    bool piscando       = (jogo.protagonista.temporizadorIframe > 0.0f);
-    bool frameVisivel   = ((glutGet(GLUT_ELAPSED_TIME) / 90) % 2 == 0);
-    bool mostrarInverso = piscando && !frameVisivel;
-
-    float rT, gT, bT;
-    if (mostrarInverso) {
-        rT = 1.0f; gT = 1.0f; bT = 0.5f;
-    } else {
-        rT = 0.25f; gT = 0.45f; bT = 1.0f;
-    }
-
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    desenharSombra(jogo.protagonista.posicao.x, jogo.protagonista.posicao.z,
-                   LARGURA * 1.1f, LARGURA * 1.1f);
-    glDisable(GL_BLEND);
-
-    desenharBloco3D(jogo.protagonista.posicao.x, BASE_Y,
-                    jogo.protagonista.posicao.z,
-                    LARGURA, LARGURA, ALTURA,
-                    rT,           gT,           bT,
-                    rT * 0.70f,   gT * 0.70f,   bT * 0.70f,
-                    rT * 0.45f,   gT * 0.45f,   bT * 0.45f,
-                    rT * 0.85f,   gT * 0.85f,   bT * 0.85f,
-                    rT * 0.55f,   gT * 0.55f,   bT * 0.55f);
-}
-
-// ---------------------------------------------------------------------------
-// Renderização do Stand
-// ---------------------------------------------------------------------------
-void desenharStand() {
-    const float BASE_Y  = 0.18f;
-    const float LARGURA = 0.5f;
-    const float ALTURA  = 1.1f;
-
-    float t  = jogo.stand.tensaoAtual / 100.0f;
-    float rT = t;
-    float gT = 1.0f - t;
-    float bT = 0.5f;
-
-    if (jogo.stand.parryBemSucedido) {
-        rT = 1.0f; gT = 1.0f; bT = 1.0f;
-    }
-    if (jogo.stand.emSobrecarga) {
-        bool pulso = ((glutGet(GLUT_ELAPSED_TIME) / 120) % 2 == 0);
-        rT = pulso ? 1.0f : 0.7f;
-        gT = 0.0f;
-        bT = 0.0f;
-    }
-
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    desenharSombra(jogo.stand.posicao.x, jogo.stand.posicao.z,
-                   LARGURA * 1.1f, LARGURA * 1.1f);
-    glDisable(GL_BLEND);
-
-    desenharBloco3D(jogo.stand.posicao.x, BASE_Y,
-                    jogo.stand.posicao.z,
-                    LARGURA, LARGURA, ALTURA,
-                    rT,           gT,           bT,
-                    rT * 0.70f,   gT * 0.70f,   bT * 0.70f,
-                    rT * 0.45f,   gT * 0.45f,   bT * 0.45f,
-                    rT * 0.85f,   gT * 0.85f,   bT * 0.85f,
-                    rT * 0.55f,   gT * 0.55f,   bT * 0.55f);
-}
-
-// ---------------------------------------------------------------------------
-// Renderização dos inimigos
-//
-//  CORREÇÃO P1: lx e lz de cada tipo são iguais ao raioColisao definido
-//  em invocarZumbi() no GameLogic.h:
-//    NORMAL    lx=lz=0.75  raioColisao=0.75
-//    RAPIDO    lx=lz=0.55  raioColisao=0.55
-//    TANK      lx=lz=1.10  raioColisao=1.10
-//    ATIRADOR  lx=lz=0.75  raioColisao=0.75
-//    EXPLOSIVO lx=lz=0.85  raioColisao=0.85
-// ---------------------------------------------------------------------------
-void desenharInimigos() {
-    const float BASE_Y = 0.18f;
-
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-    for (size_t i = 0; i < jogo.horda.size(); ++i) {
-        const Zumbi& z = jogo.horda[i];
-        if (!z.vivo) continue;
-
-        float lx, lz, alt;
-        float rT, gT, bT;
-
-        switch (z.tipo) {
-            case NORMAL:
-                lx = 0.75f; lz = 0.75f; alt = 1.4f;
-                rT = 1.0f;  gT = 0.10f; bT = 0.10f;
-                break;
-            case RAPIDO:
-                lx = 0.55f; lz = 0.55f; alt = 0.85f;
-                rT = 1.0f;  gT = 0.45f; bT = 0.0f;
-                break;
-            case TANK:
-                lx = 1.10f; lz = 1.10f; alt = 2.2f;
-                rT = 0.50f; gT = 0.0f;  bT = 0.85f;
-                break;
-            case ATIRADOR:
-                lx = 0.75f; lz = 0.75f; alt = 1.4f;
-                rT = 0.90f; gT = 0.0f;  bT = 0.75f;
-                break;
-            case EXPLOSIVO:
-                lx = 0.85f; lz = 0.85f; alt = 1.6f;
-                rT = 1.0f;  gT = 0.80f; bT = 0.0f;
-                break;
-            default:
-                lx = 0.75f; lz = 0.75f; alt = 1.4f;
-                rT = 1.0f;  gT = 0.10f; bT = 0.10f;
-                break;
-        }
-
-        desenharSombra(z.posicao.x, z.posicao.z, lx * 1.1f, lz * 1.1f);
-
-        desenharBloco3D(z.posicao.x, BASE_Y, z.posicao.z,
-                        lx, lz, alt,
-                        rT,           gT,           bT,
-                        rT * 0.68f,   gT * 0.68f,   bT * 0.68f,
-                        rT * 0.45f,   gT * 0.45f,   bT * 0.45f,
-                        rT * 0.82f,   gT * 0.82f,   bT * 0.82f,
-                        rT * 0.55f,   gT * 0.55f,   bT * 0.55f);
-    }
-
-    glDisable(GL_BLEND);
-}
-
-// ---------------------------------------------------------------------------
-// Primitivas de desenho da Fase 5 (usadas por SkillRender.h via despacho de
-// Forma). São genéricas: nenhuma "sabe" o que é uma skill. Mantêm o GL
-// concentrado em Main.cpp, deixando SkillRender.h livre de OpenGL.
+// desenharLinha3D — segmento de largura variável no plano XZ (Beam/Wall/Wave).
 // ---------------------------------------------------------------------------
 void desenharLinha3D(float x0, float y, float z0,
                      float x1, float z1,
                      float largura,
-                     float r, float g, float b) {
+                     float r, float g, float b)
+{
+    // Perpendicular 2D ao segmento
+    float dx = x1 - x0, dz = z1 - z0;
+    float len = std::sqrt(dx*dx + dz*dz);
+    if (len < 0.0001f) return;
+    float px = -dz / len * largura * 0.5f;
+    float pz =  dx / len * largura * 0.5f;
+
     glColor3f(r, g, b);
-    glLineWidth(largura * 10.0f + 1.0f);
-    glBegin(GL_LINES);
-        glVertex3f(x0, y, z0);
-        glVertex3f(x1, y, z1);
+    glBegin(GL_QUADS);
+        glVertex3f(x0 + px, y, z0 + pz);
+        glVertex3f(x1 + px, y, z1 + pz);
+        glVertex3f(x1 - px, y, z1 - pz);
+        glVertex3f(x0 - px, y, z0 - pz);
     glEnd();
-    glLineWidth(1.0f);
 }
 
+// ---------------------------------------------------------------------------
+// desenharCirculo3D — disco no plano XZ (Area/Aura/Explosion).
+// ---------------------------------------------------------------------------
 void desenharCirculo3D(float cx, float y, float cz,
                        float raio,
-                       float r, float g, float b) {
-    const int SEG = 32;
-    const float PI2 = 2.0f * 3.14159265f;
+                       float r, float g, float b)
+{
+    const int SEG = 24;
     glColor3f(r, g, b);
-    glBegin(GL_LINE_LOOP);
-    for (int i = 0; i < SEG; ++i) {
-        float ang = (float)i / (float)SEG * PI2;
-        glVertex3f(cx + raio * cosf(ang), y, cz + raio * sinf(ang));
-    }
+    glBegin(GL_TRIANGLE_FAN);
+        glVertex3f(cx, y, cz);
+        for (int i = 0; i <= SEG; ++i) {
+            float ang = (float)i / SEG * 2.0f * 3.14159265f;
+            glVertex3f(cx + std::cos(ang) * raio, y, cz + std::sin(ang) * raio);
+        }
     glEnd();
 }
 
+// ---------------------------------------------------------------------------
+// desenharArco3D — setor de anel no plano XZ (Arc/Meia-Lua).
+// ---------------------------------------------------------------------------
 void desenharArco3D(float cx, float y, float cz,
                     float raioInterno, float raioExterno,
                     float anguloCentral, float meiaAbertura,
-                    float r, float g, float b) {
-    const int SEG = 24;
+                    float r, float g, float b)
+{
+    const int SEG = 20;
+    float angIni = anguloCentral - meiaAbertura;
+    float angFim = anguloCentral + meiaAbertura;
+
     glColor3f(r, g, b);
-    glBegin(GL_QUAD_STRIP);
-    for (int i = 0; i <= SEG; ++i) {
-        float t   = (float)i / (float)SEG;
-        float ang = anguloCentral - meiaAbertura + t * (2.0f * meiaAbertura);
-        float c = cosf(ang), s = sinf(ang);
-        glVertex3f(cx + raioInterno * c, y, cz + raioInterno * s);
-        glVertex3f(cx + raioExterno * c, y, cz + raioExterno * s);
-    }
+    glBegin(GL_TRIANGLE_STRIP);
+        for (int i = 0; i <= SEG; ++i) {
+            float ang = angIni + (angFim - angIni) * (float)i / (float)SEG;
+            float cosA = std::cos(ang), sinA = std::sin(ang);
+            glVertex3f(cx + cosA * raioInterno, y, cz + sinA * raioInterno);
+            glVertex3f(cx + cosA * raioExterno, y, cz + sinA * raioExterno);
+        }
     glEnd();
 }
 
-// ---------------------------------------------------------------------------
-// Renderização dos projéteis
-//
-//  FASE 6.5: itera TODOS os slots ativos do SkillManager. Cada slot possui
-//  sua própria SkillData (build) e pool de RuntimeSkill independente.
-//  A renderização depende apenas do componente Forma da build de cada slot
-//  (despacho em SkillRender.h), sem nenhum conhecimento de skill específica.
-// ---------------------------------------------------------------------------
-void desenharProjeteis() {
-    for (int i = 0; i < skillManager.numSlots(); ++i) {
-        const SlotSkill& sl = skillManager.slot(i);
-        if (!sl.ativo) continue;
-        const std::vector<RuntimeSkill>& pool = sl.pool;
-        if (pool.empty()) continue;
-        desenharTodasSkills(sl.build, &pool[0], (int)pool.size());
+// =============================================================================
+//  INICIALIZAÇÃO DO ESTADO DO JOGO
+// =============================================================================
+
+static void inicializarEstadoJogo() {
+    // --- Jogador ---
+    g_jogo.protagonista.posicao       = {0.0f, 0.0f, 0.0f};
+    g_jogo.protagonista.velocidade    = 10.0f;
+    g_jogo.protagonista.raioColisao   = 0.5f;
+    g_jogo.protagonista.emDash        = false;
+    g_jogo.protagonista.vivo          = true;
+    g_jogo.protagonista.hp            = 5;
+    g_jogo.protagonista.hpMaximo      = 5;
+    g_jogo.protagonista.temporizadorIframe = 0.0f;
+    g_jogo.protagonista.duracaoIframe      = 1.0f;
+    g_jogo.protagonista.xpAtual            = 0;
+    g_jogo.protagonista.xpParaProximoNivel = 20;
+    g_jogo.protagonista.nivel              = 1;
+    for (int i = 0; i < TOTAL_UPGRADES; ++i)
+        g_jogo.protagonista.upgrades.niveis[i] = 0;
+
+    // --- Stand ---
+    g_jogo.stand.posicao          = {1.5f, 0.0f, 0.0f};
+    g_jogo.stand.anguloMira       = 0.0f;
+    g_jogo.stand.tensaoAtual      = 0.0f;
+    g_jogo.stand.emSobrecarga     = false;
+    g_jogo.stand.parryAtivo       = false;
+    g_jogo.stand.temporizadorParry = 0.0f;
+    g_jogo.stand.cooldownParry     = 1.5f;
+    g_jogo.stand.temporizadorCooldown = 0.0f;
+    g_jogo.stand.parryBemSucedido  = false;
+    g_jogo.stand.temporizadorFeedback = 0.0f;
+
+    // --- Horda / Gemas / Partículas ---
+    g_jogo.horda.clear();
+    g_jogo.gemas.clear();
+    g_jogo.particulas.clear();
+    g_jogo.numerosFlutuantes.clear();
+
+    // --- Timers ---
+    g_jogo.tempoSobrevivido       = 0.0f;
+    g_jogo.tempoUltimoSpawn       = 0.0f;
+    g_jogo.cooldownAtual          = 2.0f;
+    g_jogo.quantidadeSpawnAtual   = 1;
+    g_jogo.atirandoAgora          = false;
+    g_jogo.pausadoParaUpgrade     = false;
+    g_jogo.nivelAntesDaEscolha    = 1;
+    g_jogo.jogoPausado            = false;
+    g_jogo.houveMorteRecente      = false;
+    g_jogo.ultimaPosicaoMorte     = {0.0f, 0.0f, 0.0f};
+
+    // --- Desbloqueios ---
+    inicializarDesbloqueio(g_jogo.desbloqueios);
+
+    // --- Inventário ---
+    inicializarInventario(g_jogo.inventario);
+
+    // --- Menu ---
+    limparMenu(g_jogo.menuAtual);
+
+    // --- Modo de teste (ativa se SKILL_TESTE estiver definido) ---
+    activarSkillTeste(g_jogo.inventario);
+
+    // --- Monta a build inicial ---
+    montarBuildCompleta(g_jogo.inventario,
+                        g_jogo.protagonista.upgrades,
+                        g_skills);
+}
+
+// =============================================================================
+//  SPAWN DE ZUMBIS
+// =============================================================================
+
+static Zumbi criarZumbi(TipoZumbi tipo) {
+    Zumbi z;
+    z.tipo        = tipo;
+    z.estadoAtual = WANDER;
+    z.vivo        = true;
+
+    // Spawn na borda da arena
+    int lado = rand() % 4;
+    float pos = ((rand() % 2000) / 1000.0f - 1.0f) * ARENA_HALF;
+    switch (lado) {
+        case 0: z.posicao = {-ARENA_HALF, 0.0f,  pos}; break;
+        case 1: z.posicao = { ARENA_HALF, 0.0f,  pos}; break;
+        case 2: z.posicao = {pos, 0.0f, -ARENA_HALF};  break;
+        default:z.posicao = {pos, 0.0f,  ARENA_HALF};  break;
+    }
+
+    switch (tipo) {
+        case RAPIDO:
+            z.velocidade  = 12.0f; z.raioColisao = 0.4f; z.vida = 3;  break;
+        case TANK:
+            z.velocidade  =  4.0f; z.raioColisao = 0.9f; z.vida = 20; break;
+        case ATIRADOR:
+            z.velocidade  =  5.0f; z.raioColisao = 0.5f; z.vida = 6;  break;
+        case EXPLOSIVO:
+            z.velocidade  =  7.0f; z.raioColisao = 0.6f; z.vida = 5;  break;
+        default:
+            z.velocidade  =  6.0f; z.raioColisao = 0.5f; z.vida = 5;  break;
+    }
+    return z;
+}
+
+static void spawnarZumbi() {
+    TipoZumbi tipo = NORMAL;
+    int r = rand() % 100;
+    float t = g_jogo.tempoSobrevivido;
+    if (t > 120.0f && r < 10) tipo = EXPLOSIVO;
+    else if (t > 60.0f && r < 15) tipo = TANK;
+    else if (t > 30.0f && r < 20) tipo = ATIRADOR;
+    else if (r < 25) tipo = RAPIDO;
+
+    g_jogo.horda.push_back(criarZumbi(tipo));
+}
+
+// =============================================================================
+//  ATUALIZAÇÃO: JOGADOR
+// =============================================================================
+
+static void atualizarJogador(float dt) {
+    Jogador& p = g_jogo.protagonista;
+    if (!p.vivo) return;
+
+    // Movimento WASD
+    float dx = 0.0f, dz = 0.0f;
+    if (g_teclaW) dz -= 1.0f;
+    if (g_teclaS) dz += 1.0f;
+    if (g_teclaA) dx -= 1.0f;
+    if (g_teclaD) dx += 1.0f;
+
+    float len = std::sqrt(dx*dx + dz*dz);
+    if (len > 0.0001f) {
+        dx /= len; dz /= len;
+        p.posicao.x += dx * p.velocidade * dt;
+        p.posicao.z += dz * p.velocidade * dt;
+        // Limite da arena
+        if (p.posicao.x >  ARENA_HALF) p.posicao.x =  ARENA_HALF;
+        if (p.posicao.x < -ARENA_HALF) p.posicao.x = -ARENA_HALF;
+        if (p.posicao.z >  ARENA_HALF) p.posicao.z =  ARENA_HALF;
+        if (p.posicao.z < -ARENA_HALF) p.posicao.z = -ARENA_HALF;
+    }
+
+    // Stand segue o jogador com offset em direção ao cursor
+    Vetor3D dir = obterDirecaoNormalizada(p.posicao, g_posicaoCursor);
+    g_jogo.stand.posicao.x = p.posicao.x + dir.x * 1.5f;
+    g_jogo.stand.posicao.z = p.posicao.z + dir.z * 1.5f;
+    g_jogo.stand.anguloMira = std::atan2(dir.z, dir.x);
+
+    // Iframe
+    if (p.temporizadorIframe > 0.0f)
+        p.temporizadorIframe -= dt;
+
+    // Coleta de gemas
+    for (size_t i = 0; i < g_jogo.gemas.size(); ++i) {
+        GemaXP& g = g_jogo.gemas[i];
+        if (g.coletada) continue;
+        float d2 = calcularDistanciaQuadrada(p.posicao, g.posicao);
+        if (d2 < 2.5f * 2.5f) {
+            g.coletada = true;
+            // XP já creditado em processarMorteZumbi; a gema é só visual.
+        }
+    }
+
+    // Sobrecarga de tensão
+    if (g_jogo.stand.tensaoAtual >= 100.0f && !g_jogo.stand.emSobrecarga) {
+        g_jogo.stand.emSobrecarga = true;
+        g_jogo.stand.tensaoAtual  = 100.0f;
+    }
+    if (g_jogo.stand.emSobrecarga) {
+        g_jogo.stand.tensaoAtual -= 20.0f * dt; // drena durante sobrecarga
+        if (g_jogo.stand.tensaoAtual <= 0.0f) {
+            g_jogo.stand.tensaoAtual  = 0.0f;
+            g_jogo.stand.emSobrecarga = false;
+        }
+    }
+
+    // Disparo contínuo por clique
+    if (g_cliqueMouse && !g_jogo.stand.emSobrecarga && !g_jogo.jogoPausado) {
+        g_skills.executar(g_jogo, g_posicaoCursor);
+        g_jogo.atirandoAgora = true;
+    } else {
+        g_jogo.atirandoAgora = false;
     }
 }
 
-// ---------------------------------------------------------------------------
-// Renderização das gemas de XP
-// ---------------------------------------------------------------------------
-void desenharGemas() {
-    const float BASE_Y = 0.18f;
-    const float LX     = 0.32f;
-    const float LZ     = 0.32f;
-    const float ALT    = 0.55f;
+// =============================================================================
+//  ATUALIZAÇÃO: ZUMBIS (IA simples WANDER→CHASE)
+// =============================================================================
 
+static void atualizarZumbis(float dt) {
+    Jogador& p = g_jogo.protagonista;
+
+    for (size_t i = 0; i < g_jogo.horda.size(); ++i) {
+        Zumbi& z = g_jogo.horda[i];
+        if (!z.vivo) continue;
+
+        // Sempre persegue o jogador (IA CHASE)
+        Vetor3D dir = obterDirecaoNormalizada(z.posicao, p.posicao);
+        z.posicao.x += dir.x * z.velocidade * dt;
+        z.posicao.z += dir.z * z.velocidade * dt;
+
+        // Limites da arena
+        if (z.posicao.x >  ARENA_HALF) z.posicao.x =  ARENA_HALF;
+        if (z.posicao.x < -ARENA_HALF) z.posicao.x = -ARENA_HALF;
+        if (z.posicao.z >  ARENA_HALF) z.posicao.z =  ARENA_HALF;
+        if (z.posicao.z < -ARENA_HALF) z.posicao.z = -ARENA_HALF;
+    }
+}
+
+// Colisão zumbi→jogador (chamada dentro de SkillManager::atualizarTodos)
+void processarColisaoZumbiJogador_Grade(EstadoDoJogo& jogo,
+                                        GradeEspacial& /*grade*/,
+                                        float dt) {
+    Jogador& p = jogo.protagonista;
+    if (!p.vivo || p.temporizadorIframe > 0.0f) return;
+
+    for (size_t i = 0; i < jogo.horda.size(); ++i) {
+        Zumbi& z = jogo.horda[i];
+        if (!z.vivo) continue;
+        if (verificarColisao(p.posicao, p.raioColisao, z.posicao, z.raioColisao)) {
+            p.hp--;
+            p.temporizadorIframe = p.duracaoIframe;
+            if (p.hp <= 0) {
+                p.hp   = 0;
+                p.vivo = false;
+                g_jogoTerminado = true;
+            }
+            break;
+        }
+    }
+    (void)dt;
+}
+
+// =============================================================================
+//  ATUALIZAÇÃO: PARTÍCULAS E FLOATING DAMAGE
+// =============================================================================
+
+static void atualizarParticulas(float dt) {
+    for (size_t i = 0; i < g_jogo.particulas.size(); ++i) {
+        Particula& p = g_jogo.particulas[i];
+        if (!p.ativa) continue;
+        p.posicao.x    += p.velocidade.x * dt;
+        p.posicao.y    += p.velocidade.y * dt;
+        p.posicao.z    += p.velocidade.z * dt;
+        p.velocidade.y -= 9.8f * dt;     // gravidade
+        p.tempoVida    -= dt;
+        p.transparencia = p.tempoVida / p.tempoVidaMaximo;
+        if (p.tempoVida <= 0.0f) p.ativa = false;
+    }
+}
+
+static void atualizarFloatingDamage(float dt) {
+    for (size_t i = 0; i < g_jogo.numerosFlutuantes.size(); ++i) {
+        FloatingDamage& fd = g_jogo.numerosFlutuantes[i];
+        fd.tempoRestante        -= dt;
+        fd.deslocamentoVertical += 2.0f * dt;
+        fd.transparencia = fd.tempoRestante / fd.tempoTotal;
+    }
+}
+
+// =============================================================================
+//  SPAWN PERIÓDICO DE ZUMBIS
+// =============================================================================
+
+static void atualizarSpawn(float dt) {
+    if (g_jogo.jogoPausado) return;
+
+    g_jogo.tempoSobrevivido += dt;
+    g_jogo.tempoUltimoSpawn += dt;
+
+    // Cooldown diminui com o tempo (fica mais difícil)
+    float cooldown = 2.5f - g_jogo.tempoSobrevivido * 0.005f;
+    if (cooldown < 0.5f) cooldown = 0.5f;
+
+    if (g_jogo.tempoUltimoSpawn >= cooldown) {
+        g_jogo.tempoUltimoSpawn = 0.0f;
+        int n = 1 + (int)(g_jogo.tempoSobrevivido / 30.0f);
+        if (n > 5) n = 5;
+        for (int i = 0; i < n; ++i) spawnarZumbi();
+    }
+}
+
+// =============================================================================
+//  DESENHO DE CENA (OPENGL)
+// =============================================================================
+
+// Câmera isométrica seguindo o jogador
+static void configurarCamera() {
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    gluPerspective(45.0, (double)JANELA_W / JANELA_H, 0.5, 600.0);
+
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+
+    Vetor3D& p = g_jogo.protagonista.posicao;
+    float eyeX = p.x + CAM_DIST * std::cos(CAM_ANGLE_X * 3.14159265f / 180.0f);
+    float eyeY = CAM_DIST * std::sin(CAM_ANGLE_X * 3.14159265f / 180.0f) * 1.5f;
+    float eyeZ = p.z + CAM_DIST;
+    gluLookAt(eyeX, eyeY, eyeZ,
+              p.x,   1.0f,  p.z,
+              0.0,   1.0,   0.0);
+}
+
+// Chão da arena
+static void desenharChao() {
+    const float L = ARENA_HALF;
+    const int GRID = 20;
+    float passo = (2.0f * L) / GRID;
+
+    // Fundo
+    glColor3f(0.08f, 0.08f, 0.10f);
+    glBegin(GL_QUADS);
+        glVertex3f(-L, -0.01f, -L);
+        glVertex3f( L, -0.01f, -L);
+        glVertex3f( L, -0.01f,  L);
+        glVertex3f(-L, -0.01f,  L);
+    glEnd();
+
+    // Grade
+    glColor3f(0.15f, 0.15f, 0.20f);
+    glBegin(GL_LINES);
+    for (int i = 0; i <= GRID; ++i) {
+        float v = -L + i * passo;
+        glVertex3f(v, 0.0f, -L); glVertex3f(v, 0.0f,  L);
+        glVertex3f(-L, 0.0f, v); glVertex3f( L, 0.0f, v);
+    }
+    glEnd();
+
+    // Borda
+    glColor3f(0.5f, 0.1f, 0.1f);
+    glBegin(GL_LINE_LOOP);
+        glVertex3f(-L, 0.02f, -L); glVertex3f( L, 0.02f, -L);
+        glVertex3f( L, 0.02f,  L); glVertex3f(-L, 0.02f,  L);
+    glEnd();
+}
+
+// Jogador (cubo branco-azulado)
+static void desenharJogador() {
+    Jogador& p = g_jogo.protagonista;
+    if (!p.vivo) return;
+    float flash = (p.temporizadorIframe > 0.0f) ? 0.5f : 1.0f;
+    desenharBloco3D(p.posicao.x, 0.0f, p.posicao.z,
+                    0.8f, 0.8f, 1.2f,
+                    0.9f*flash, 0.9f*flash, 1.0f*flash,
+                    0.7f*flash, 0.7f*flash, 0.9f*flash,
+                    0.5f*flash, 0.5f*flash, 0.7f*flash,
+                    0.8f*flash, 0.8f*flash, 1.0f*flash,
+                    0.6f*flash, 0.6f*flash, 0.8f*flash);
+}
+
+// Stand (cubo dourado menor)
+static void desenharStand() {
+    Entidade& s = g_jogo.stand;
+    bool sob = s.emSobrecarga;
+    float r = sob ? 1.0f : 0.9f;
+    float g = sob ? 0.3f : 0.7f;
+    float b = sob ? 0.0f : 0.0f;
+    desenharBloco3D(s.posicao.x, 0.0f, s.posicao.z,
+                    0.6f, 0.6f, 0.9f,
+                    r, g, b,  r*0.8f, g*0.8f, b,
+                    r*0.6f, g*0.6f, b,  r*0.9f, g*0.9f, b,  r*0.7f, g*0.7f, b);
+}
+
+// Zumbis
+static void desenharZumbis() {
+    for (size_t i = 0; i < g_jogo.horda.size(); ++i) {
+        const Zumbi& z = g_jogo.horda[i];
+        if (!z.vivo) continue;
+        float cR, cG, cB;
+        obterCorBaseZumbi(z.tipo, cR, cG, cB);
+        float s = z.raioColisao * 1.8f;
+        desenharBloco3D(z.posicao.x, 0.0f, z.posicao.z,
+                        s, s, s * 1.2f,
+                        cR, cG, cB,
+                        cR*0.8f, cG*0.8f, cB*0.8f,
+                        cR*0.6f, cG*0.6f, cB*0.6f,
+                        cR*0.9f, cG*0.9f, cB*0.9f,
+                        cR*0.7f, cG*0.7f, cB*0.7f);
+    }
+}
+
+// Gemas de XP
+static void desenharGemas() {
+    for (size_t i = 0; i < g_jogo.gemas.size(); ++i) {
+        const GemaXP& g = g_jogo.gemas[i];
+        if (g.coletada) continue;
+        desenharCirculo3D(g.posicao.x, 0.05f, g.posicao.z, 0.25f,
+                          0.1f, 0.9f, 0.5f);
+    }
+}
+
+// Partículas
+static void desenharParticulas() {
+    glPointSize(4.0f);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-    for (size_t i = 0; i < jogo.gemas.size(); ++i) {
-        const GemaXP& g = jogo.gemas[i];
-        if (g.coletada) continue;
-
-        float pulso = 0.85f + 0.15f * sinf(glutGet(GLUT_ELAPSED_TIME) * 0.004f + g.posicao.x);
-
-        desenharSombra(g.posicao.x, g.posicao.z, LX, LZ);
-
-        desenharBloco3D(g.posicao.x, BASE_Y, g.posicao.z,
-                        LX, LZ, ALT,
-                        0.10f * pulso, 1.0f * pulso, 0.35f * pulso,
-                        0.05f,         0.65f,         0.20f,
-                        0.03f,         0.40f,         0.12f,
-                        0.08f,         0.80f,         0.28f,
-                        0.04f,         0.50f,         0.16f);
+    glBegin(GL_POINTS);
+    for (size_t i = 0; i < g_jogo.particulas.size(); ++i) {
+        const Particula& p = g_jogo.particulas[i];
+        if (!p.ativa) continue;
+        glColor4f(p.corR, p.corG, p.corB, p.transparencia);
+        glVertex3f(p.posicao.x, p.posicao.y, p.posicao.z);
     }
-
+    glEnd();
     glDisable(GL_BLEND);
 }
 
-const char* obterNomeUpgrade(TipoUpgrade tipo) {
-    switch(tipo) {
-        case DANO:       return "Dano";
-        case CADENCIA:   return "Cadencia";
-        case PERFURACAO: return "Perfuracao";
-        case TENSAO_UP:  return "Eficiencia (Tensao)";
-        case VELOCIDADE: return "Velocidade";
-        case VIDA:       return "Vida Maxima";
-        default:         return "Desconhecido";
+// Skills (todos os slots)
+static void desenharSkills() {
+    for (int i = 0; i < g_skills.numSlots(); ++i) {
+        const SlotSkill& sl = g_skills.slot(i);
+        if (!sl.ativo) continue;
+        for (size_t k = 0; k < sl.pool.size(); ++k)
+            desenharSkill(sl.build, sl.pool[k]);
     }
 }
 
-// ---------------------------------------------------------------------------
-// HUD — Interface 2D sobreposta à cena 3D
-//
-//  CORREÇÃO P5: barra de tensão lê sempre jogo.stand.tensaoAtual em tempo
-//  real, cores com clamp(0,1) para evitar artefatos, borda vermelha pulsante
-//  quando em sobrecarga, e texto diferenciado para cada estado do Parry.
-// ---------------------------------------------------------------------------
-void desenharHUD() {
-    glDisable(GL_DEPTH_TEST);
-
-    glMatrixMode(GL_PROJECTION);
-    glPushMatrix();
-    glLoadIdentity();
-    gluOrtho2D(0, JANELA_W, 0, JANELA_H);
-
-    glMatrixMode(GL_MODELVIEW);
-    glPushMatrix();
-    glLoadIdentity();
-
-    // ---- Barra de HP ----
-    {
-        int maxHP = jogo.protagonista.hpMaximo;
-        const float BAR_W  = 120.0f;
-        const float BAR_H  = 14.0f;
-        const float BAR_X  = 12.0f;
-        const float BAR_Y  = JANELA_H - 26.0f;
-
-        float propHP = (float)jogo.protagonista.hp / (float)maxHP;
-        if (propHP < 0.0f) propHP = 0.0f;
-        if (propHP > 1.0f) propHP = 1.0f;
-
-        // Fundo
-        glColor3f(0.25f, 0.1f, 0.1f);
-        glBegin(GL_QUADS);
-            glVertex2f(BAR_X,         BAR_Y);
-            glVertex2f(BAR_X + BAR_W, BAR_Y);
-            glVertex2f(BAR_X + BAR_W, BAR_Y + BAR_H);
-            glVertex2f(BAR_X,         BAR_Y + BAR_H);
-        glEnd();
-
-        // Preenchimento
-        glColor3f(0.85f, 0.15f, 0.15f);
-        glBegin(GL_QUADS);
-            glVertex2f(BAR_X,                   BAR_Y);
-            glVertex2f(BAR_X + BAR_W * propHP,  BAR_Y);
-            glVertex2f(BAR_X + BAR_W * propHP,  BAR_Y + BAR_H);
-            glVertex2f(BAR_X,                   BAR_Y + BAR_H);
-        glEnd();
-
-        char buf[32];
-        sprintf(buf, "HP  %d/%d", jogo.protagonista.hp, maxHP);
-        glColor3f(1.0f, 0.85f, 0.85f);
-        glRasterPos2f(BAR_X + BAR_W + 8.0f, BAR_Y + 2.0f);
-        for (const char* c = buf; *c; ++c)
-            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
-    }
-
-    // ---- Barra de Tensão ----
-    // Normal     : sobe ao atirar (18/s), desce em repouso (5/s)
-    // Sobrecarga : drena sozinha (12/s), disparo bloqueado, dano zero
-    // Saída      : ao chegar em 0% durante sobrecarga, tudo volta ao normal
-    {
-        const float BAR_W = 130.0f;
-        const float BAR_H = 14.0f;
-        const float BAR_X = 12.0f;
-        const float BAR_Y = JANELA_H - 48.0f;
-
-        float tensaoReal = jogo.stand.tensaoAtual;
-        float prop = tensaoReal / 100.0f;
-        if (prop < 0.0f) prop = 0.0f;
-        if (prop > 1.0f) prop = 1.0f;
-
-        // Fundo
-        glColor3f(0.15f, 0.10f, 0.05f);
-        glBegin(GL_QUADS);
-            glVertex2f(BAR_X,         BAR_Y);
-            glVertex2f(BAR_X + BAR_W, BAR_Y);
-            glVertex2f(BAR_X + BAR_W, BAR_Y + BAR_H);
-            glVertex2f(BAR_X,         BAR_Y + BAR_H);
-        glEnd();
-
-        // Cor do preenchimento:
-        //   Normal    : verde (0%) → amarelo (50%) → vermelho (100%)
-        //   Sobrecarga: vermelho pulsante
-        float cr, cg, cb;
-        if (!jogo.stand.emSobrecarga) {
-            cr = prop * 2.0f;           if (cr > 1.0f) cr = 1.0f;
-            cg = (1.0f - prop) * 2.0f; if (cg > 1.0f) cg = 1.0f;
-            cb = 0.0f;
-        } else {
-            bool pulso = ((glutGet(GLUT_ELAPSED_TIME) / 180) % 2 == 0);
-            cr = pulso ? 1.0f : 0.55f;
-            cg = 0.0f;
-            cb = 0.0f;
-        }
-
-        // Preenchimento proporcional
-        glColor3f(cr, cg, cb);
-        glBegin(GL_QUADS);
-            glVertex2f(BAR_X,                 BAR_Y);
-            glVertex2f(BAR_X + BAR_W * prop,  BAR_Y);
-            glVertex2f(BAR_X + BAR_W * prop,  BAR_Y + BAR_H);
-            glVertex2f(BAR_X,                 BAR_Y + BAR_H);
-        glEnd();
-
-        // Borda: vermelha grossa em sobrecarga, cinza fina no normal
-        if (jogo.stand.emSobrecarga) {
-            glColor3f(1.0f, 0.0f, 0.0f);
-            glLineWidth(2.0f);
-        } else {
-            glColor3f(0.4f, 0.4f, 0.4f);
-            glLineWidth(1.0f);
-        }
-        glBegin(GL_LINE_LOOP);
-            glVertex2f(BAR_X,         BAR_Y);
-            glVertex2f(BAR_X + BAR_W, BAR_Y);
-            glVertex2f(BAR_X + BAR_W, BAR_Y + BAR_H);
-            glVertex2f(BAR_X,         BAR_Y + BAR_H);
-        glEnd();
-        glLineWidth(1.0f);
-
-        // Texto de estado
-        char buf[64];
-        if (jogo.stand.emSobrecarga) {
-            sprintf(buf, "SOBRECARGA! %.0f%%", tensaoReal);
-            glColor3f(1.0f, 0.3f, 0.3f);
-        } else if (jogo.stand.parryBemSucedido) {
-            sprintf(buf, "Tensao %.0f%% [PARRY!]", tensaoReal);
-            glColor3f(0.4f, 1.0f, 0.4f);
-        } else if (jogo.atirandoAgora) {
-            sprintf(buf, "Tensao %.0f%% ^", tensaoReal);
-            glColor3f(cr, (cg + 0.2f > 1.0f ? 1.0f : cg + 0.2f), 0.2f);
-        } else {
-            sprintf(buf, "Tensao %.0f%%", tensaoReal);
-            glColor3f(0.75f, 0.75f, 0.45f);
-        }
-        glRasterPos2f(BAR_X + BAR_W + 8.0f, BAR_Y + 2.0f);
-        for (const char* c = buf; *c; ++c)
-            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
-
-        // Aviso piscante de disparo bloqueado
-        if (jogo.stand.emSobrecarga) {
-            bool piscaTxt = ((glutGet(GLUT_ELAPSED_TIME) / 400) % 2 == 0);
-            if (piscaTxt) {
-                const char* aviso = "[ DISPARO BLOQUEADO ]";
-                glColor3f(1.0f, 0.2f, 0.2f);
-                glRasterPos2f(BAR_X, BAR_Y - 14.0f);
-                for (const char* c = aviso; *c; ++c)
-                    glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
-            }
-        }
-    } // <-- fim do bloco Barra de Tensão (CORREÇÃO: sem glPopMatrix aqui)
-
-    // ---- Barra de XP ----
-    {
-        const float BAR_W = 220.0f;
-        const float BAR_H = 10.0f;
-        const float BAR_X = 12.0f;
-        const float BAR_Y = JANELA_H - 66.0f;
-        float prop = (jogo.protagonista.xpParaProximoNivel > 0)
-                   ? (float)jogo.protagonista.xpAtual / (float)jogo.protagonista.xpParaProximoNivel
-                   : 0.0f;
-        if (prop > 1.0f) prop = 1.0f;
-
-        glColor3f(0.10f, 0.10f, 0.15f);
-        glBegin(GL_QUADS);
-            glVertex2f(BAR_X,         BAR_Y);
-            glVertex2f(BAR_X + BAR_W, BAR_Y);
-            glVertex2f(BAR_X + BAR_W, BAR_Y + BAR_H);
-            glVertex2f(BAR_X,         BAR_Y + BAR_H);
-        glEnd();
-        glColor3f(0.5f, 0.8f, 1.0f);
-        glBegin(GL_QUADS);
-            glVertex2f(BAR_X,                  BAR_Y);
-            glVertex2f(BAR_X + BAR_W * prop,   BAR_Y);
-            glVertex2f(BAR_X + BAR_W * prop,   BAR_Y + BAR_H);
-            glVertex2f(BAR_X,                  BAR_Y + BAR_H);
-        glEnd();
-
-        char buf[64];
-        sprintf(buf, "Nivel %d   XP %d/%d",
-                jogo.protagonista.nivel,
-                jogo.protagonista.xpAtual,
-                jogo.protagonista.xpParaProximoNivel);
-        glColor3f(0.75f, 0.90f, 1.0f);
-        glRasterPos2f(BAR_X, BAR_Y - 14.0f);
-        for (const char* c = buf; *c; ++c)
-            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
-    }
-
-    // ---- Tempo de sobrevivência ----
-    {
-        char buf[32];
-        int seg = (int)jogo.tempoSobrevivido;
-        sprintf(buf, "Tempo  %02d:%02d", seg / 60, seg % 60);
-        glColor3f(0.80f, 0.80f, 0.80f);
-        glRasterPos2f(12.0f, JANELA_H - 96.0f);
-        for (const char* c = buf; *c; ++c)
-            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
-    }
-
-    // ---- Indicador de Parry ----
-    {
-        const char* parryTxt;
-        float pr, pg, pb;
-        if (jogo.stand.parryAtivo) {
-            parryTxt = "PARRY ATIVO!";
-            pr = 0.0f; pg = 1.0f; pb = 1.0f;
-        } else if (jogo.stand.emSobrecarga) {
-            parryTxt = "Parry: SOBRECARGA";
-            pr = 1.0f; pg = 0.2f; pb = 0.2f;
-        } else if (jogo.stand.temporizadorCooldown > 0.0f) {
-            parryTxt = "Parry: recarga";
-            pr = 0.5f; pg = 0.5f; pb = 0.5f;
-        } else {
-            parryTxt = "Parry: pronto  [ESPACO]";
-            pr = 0.3f; pg = 0.9f; pb = 0.3f;
-        }
-        glColor3f(pr, pg, pb);
-        glRasterPos2f(12.0f, JANELA_H - 112.0f);
-        for (const char* c = parryTxt; *c; ++c)
-            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
-    }
-
-    // ---- Controles ----
-    {
-        const char* ctrl = "WASD: mover  |  Clique: atirar  |  Espaco: Parry  |  R: reiniciar";
-        glColor3f(0.45f, 0.45f, 0.45f);
-        glRasterPos2f(10.0f, 10.0f);
-        for (const char* c = ctrl; *c; ++c)
-            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
-    }
-
-    // ---- Tela de Pausa ----
-     if (jogo.pausadoParaUpgrade) {
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glColor4f(0.02f, 0.04f, 0.12f, 0.88f);
-        glBegin(GL_QUADS);
-            glVertex2f(0,        0);
-            glVertex2f(JANELA_W, 0);
-            glVertex2f(JANELA_W, JANELA_H);
-            glVertex2f(0,        JANELA_H);
-        glEnd();
-        glDisable(GL_BLEND);
-
-        // Título
-        char buf[128];
-        sprintf(buf, "LEVEL UP!  Nivel %d", jogo.protagonista.nivel);
-        glColor3f(1.0f, 0.9f, 0.2f);
-        glRasterPos2f((float)JANELA_W / 2.0f - 95.0f,
-                      (float)JANELA_H / 2.0f + 80.0f);
-        for (const char* c = buf; *c; ++c)
-            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
-
-        // Instrução
-        const char* inst = "Escolha uma recompensa (1, 2 ou 3):";
-        glColor3f(0.80f, 0.80f, 0.80f);
-        glRasterPos2f((float)JANELA_W / 2.0f - 135.0f,
-                      (float)JANELA_H / 2.0f + 50.0f);
-        for (const char* c = inst; *c; ++c)
-            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
-
-        // Opções do novo menu (MenuLevelUp)
-        for (int i = 0; i < jogo.menuAtual.quantidade; ++i) {
-            const LevelUpChoice& op = jogo.menuAtual.escolhas[i];
-
-            float yr = (float)JANELA_H / 2.0f + 10.0f - (i * 50.0f);
-
-            // Cor da raridade
-            float rr, rg, rb;
-            corRaridade(op.raridade, rr, rg, rb);
-            glColor3f(rr, rg, rb);
-
-            // Linha principal
-            sprintf(buf, "[ %d ] %s", i + 1, op.descricao);
-            glRasterPos2f((float)JANELA_W / 2.0f - 170.0f, yr);
-            for (const char* c = buf; *c; ++c)
-                glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
-
-            // Subtítulo (linha menor)
-            if (op.subtitulo[0] != '\0') {
-                glColor3f(rr * 0.75f, rg * 0.75f, rb * 0.75f);
-                glRasterPos2f((float)JANELA_W / 2.0f - 155.0f, yr - 18.0f);
-                for (const char* c = op.subtitulo; *c; ++c)
-                    glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
-            }
-        }
-
-        // Painel de skills equipadas (lado direito, informativo)
-        glColor3f(0.50f, 0.60f, 0.70f);
-        glRasterPos2f((float)JANELA_W - 220.0f,
-                      (float)JANELA_H / 2.0f + 80.0f);
-        const char* titSkills = "Build Atual:";
-        for (const char* c = titSkills; *c; ++c)
-            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
-
-        for (int s = 0; s < jogo.inventario.numEquipadas; ++s) {
-            int id = jogo.inventario.equipadas[s];
-            if (id < 0) continue;
-            int nv = jogo.inventario.nivelSkill[id];
-            sprintf(buf, "  %s  Nv.%d", SkillFactory::nomeDe(id), nv);
-            glColor3f(0.60f, 0.80f, 1.0f);
-            glRasterPos2f((float)JANELA_W - 215.0f,
-                          (float)JANELA_H / 2.0f + 60.0f - s * 20.0f);
-            for (const char* c = buf; *c; ++c)
-                glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
-        }
-    }
-
-    // ---- Tela de morte ----
-    if (!jogo.protagonista.vivo) {
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glColor4f(0.0f, 0.0f, 0.0f, 0.55f);
-        glBegin(GL_QUADS);
-            glVertex2f(0,        0);
-            glVertex2f(JANELA_W, 0);
-            glVertex2f(JANELA_W, JANELA_H);
-            glVertex2f(0,        JANELA_H);
-        glEnd();
-        glDisable(GL_BLEND);
-
-        const char* msg1 = "VOCE MORREU";
-        const char* msg2 = "Pressione R para reiniciar";
-        glColor3f(1.0f, 0.20f, 0.20f);
-        glRasterPos2f((float)JANELA_W / 2.0f - 70.0f, (float)JANELA_H / 2.0f + 15.0f);
-        for (const char* c = msg1; *c; ++c)
-            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
-        glColor3f(0.85f, 0.85f, 0.85f);
-        glRasterPos2f((float)JANELA_W / 2.0f - 105.0f, (float)JANELA_H / 2.0f - 10.0f);
-        for (const char* c = msg2; *c; ++c)
-            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
-    }
-
-    // ---- Restauração das matrizes ----  (sempre ao final, fora de qualquer bloco)
-    glPopMatrix();
-    glMatrixMode(GL_PROJECTION);
-    glPopMatrix();
-    glMatrixMode(GL_MODELVIEW);
-
-    glEnable(GL_DEPTH_TEST);
-}
-
-// ---------------------------------------------------------------------------
-// Inicialização do jogo
-//
-//  CORREÇÃO P1: raioColisao do jogador = 0.70 (= LARGURA visual do cubo).
-// ---------------------------------------------------------------------------
-void inicializarJogo() {
-    // Fase 5: popula a SkillFactory uma vez. Idempotente (re-registro atualiza).
-    registrarSkillsPadrao();
-
-    jogo.protagonista.posicao.x = 0.0f;
-    jogo.protagonista.posicao.y = 0.0f;
-    jogo.protagonista.posicao.z = 0.0f;
-    jogo.protagonista.velocidade         = 10.0f;
-    jogo.protagonista.vivo               = true;
-    jogo.protagonista.raioColisao        = 0.70f;  // igual à LARGURA visual (P1)
-    jogo.protagonista.hp                 = 3;
-    for (int i = 0; i < TOTAL_UPGRADES; ++i) {
-        jogo.protagonista.upgrades.niveis[i] = 0;
-    }
-    jogo.protagonista.hpMaximo          = HP_BASE;
-    jogo.quantidadeOpcoes               = 0;
-
-    // FASE 6 — Inicializa inventário e menu de progressão
-    inicializarInventario(jogo.inventario);
-    limparMenu(jogo.menuAtual);
-
-    // FASE 6 — Modo de teste: ativa skill definida em SKILL_TESTE (se houver)
-    // Para testar: #define SKILL_TESTE "MissilVampirico" antes do #include
-    activarSkillTeste(jogo.inventario);
-
-    // FASE 6.5 — Monta a build completa em TODOS os slots do SkillManager.
-    // Esta é a ÚNICA chamada necessária: popula slots[0..N-1] independentes.
-    // reconstruirHabilidade() foi removida — era regressão que sobrescrevia
-    // o inventário com o sistema antigo de slot único.
-    montarBuildCompleta(jogo.inventario, jogo.protagonista.upgrades, skillManager);
-
-    jogo.protagonista.temporizadorIframe = 0.0f;
-    jogo.protagonista.duracaoIframe      = 1.2f;
-    jogo.protagonista.xpAtual            = 0;
-    jogo.protagonista.nivel              = 1;
-    jogo.protagonista.xpParaProximoNivel = calcularXpParaNivel(1);
-
-    jogo.stand.tensaoAtual          = 0.0f;
-    jogo.stand.emSobrecarga         = false;
-    jogo.stand.parryAtivo           = false;
-    jogo.stand.temporizadorParry    = 0.0f;
-    jogo.stand.cooldownParry        = COOLDOWN_PARRY_SEGUNDOS;
-    jogo.stand.temporizadorCooldown = 0.0f;
-    jogo.stand.parryBemSucedido     = false;
-    jogo.stand.temporizadorFeedback = 0.0f;
-
-    jogo.tempoSobrevivido    = 0.0f;
-    jogo.tempoUltimoSpawn    = 0.0f;
-    jogo.pausadoParaUpgrade  = false;
-    jogo.jogoPausado         = false;
-    jogo.nivelAntesDaEscolha = 0;
-    jogo.atirandoAgora       = false;
-
-    glClearColor(0.06f, 0.07f, 0.06f, 1.0f);
-
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    float aspecto = (float)JANELA_W / (float)JANELA_H;
-    glOrtho(-CAM_ORTHO * aspecto,  CAM_ORTHO * aspecto,
-            -CAM_ORTHO,             CAM_ORTHO,
-             CAM_Z_NEAR,            CAM_Z_FAR);
-
-    glMatrixMode(GL_MODELVIEW);
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LEQUAL);
-}
-
-// ---------------------------------------------------------------------------
-// Renderização principal
-// ---------------------------------------------------------------------------
-void display() {
+static void desenharCena() {
+    glClearColor(0.05f, 0.05f, 0.08f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glEnable(GL_DEPTH_TEST);
 
-    aplicarCameraIsometrica();
+    configurarCamera();
 
     desenharChao();
-
     desenharGemas();
-    desenharProjeteis();
-    desenharInimigos();
-    desenharStand();
+    desenharZumbis();
+    desenharSkills();
+    desenharParticulas();
     desenharJogador();
+    desenharStand();
+}
 
-    if (jogo.stand.parryAtivo) {
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        desenharAroParry(jogo.stand.posicao.x,
-                         jogo.stand.posicao.z,
-                         RAIO_EXPULSAO_PARRY);
-        glDisable(GL_BLEND);
+// =============================================================================
+//  HUD (ortográfico 2D)
+// =============================================================================
+
+static void entrarModo2D() {
+    glDisable(GL_DEPTH_TEST);
+    glMatrixMode(GL_PROJECTION);
+    glPushMatrix();
+    glLoadIdentity();
+    gluOrtho2D(0.0, JANELA_W, 0.0, JANELA_H);
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glLoadIdentity();
+}
+
+static void sairModo2D() {
+    glMatrixMode(GL_PROJECTION);
+    glPopMatrix();
+    glMatrixMode(GL_MODELVIEW);
+    glPopMatrix();
+    glEnable(GL_DEPTH_TEST);
+}
+
+static void desenharTexto(float x, float y, const char* str,
+                           float r, float g, float b) {
+    glColor3f(r, g, b);
+    glRasterPos2f(x, y);
+    for (const char* c = str; *c; ++c)
+        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
+}
+
+static void desenharBarra(float x, float y, float w, float h,
+                           float valor, float maximo,
+                           float rF, float gF, float bF,
+                           float rB, float gB, float bB) {
+    // Fundo
+    glColor3f(rB, gB, bB);
+    glBegin(GL_QUADS);
+        glVertex2f(x, y);       glVertex2f(x+w, y);
+        glVertex2f(x+w, y+h);   glVertex2f(x, y+h);
+    glEnd();
+    // Preenchimento
+    float fill = (maximo > 0.0f) ? (valor / maximo) * w : 0.0f;
+    if (fill < 0.0f) fill = 0.0f;
+    glColor3f(rF, gF, bF);
+    glBegin(GL_QUADS);
+        glVertex2f(x, y);       glVertex2f(x+fill, y);
+        glVertex2f(x+fill, y+h);glVertex2f(x, y+h);
+    glEnd();
+}
+
+static void desenharHUD() {
+    entrarModo2D();
+
+    Jogador& p = g_jogo.protagonista;
+
+    // Barra de HP
+    desenharBarra(10.0f, JANELA_H - 30.0f, 200.0f, 18.0f,
+                  (float)p.hp, (float)p.hpMaximo,
+                  0.9f, 0.1f, 0.1f,   0.3f, 0.0f, 0.0f);
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "HP %d/%d", p.hp, p.hpMaximo);
+    desenharTexto(12.0f, JANELA_H - 27.0f, buf, 1.0f, 1.0f, 1.0f);
+
+    // Barra de Tensão
+    desenharBarra(10.0f, JANELA_H - 60.0f, 200.0f, 18.0f,
+                  g_jogo.stand.tensaoAtual, 100.0f,
+                  g_jogo.stand.emSobrecarga ? 1.0f : 0.3f,
+                  g_jogo.stand.emSobrecarga ? 0.3f : 0.5f,
+                  0.0f,
+                  0.1f, 0.1f, 0.3f);
+    std::snprintf(buf, sizeof(buf), "Tensão %.0f%%",
+                  g_jogo.stand.tensaoAtual);
+    desenharTexto(12.0f, JANELA_H - 57.0f, buf, 1.0f, 1.0f, 1.0f);
+
+    // Barra de XP
+    desenharBarra(10.0f, JANELA_H - 90.0f, 200.0f, 12.0f,
+                  (float)p.xpAtual, (float)p.xpParaProximoNivel,
+                  0.2f, 0.8f, 1.0f,   0.05f, 0.1f, 0.2f);
+    std::snprintf(buf, sizeof(buf), "Nv %d  XP %d/%d",
+                  p.nivel, p.xpAtual, p.xpParaProximoNivel);
+    desenharTexto(12.0f, JANELA_H - 88.0f, buf, 0.7f, 0.9f, 1.0f);
+
+    // Tempo
+    std::snprintf(buf, sizeof(buf), "%.1fs", g_jogo.tempoSobrevivido);
+    desenharTexto(JANELA_W - 80.0f, JANELA_H - 28.0f, buf, 0.8f, 0.8f, 0.8f);
+
+    // Skills equipadas (slots)
+    float sx = 10.0f, sy = 10.0f;
+    for (int i = 0; i < MAX_SLOTS_SKILL; ++i) {
+        const SlotSkill& sl = g_skills.slot(i);
+        if (!sl.ativo) continue;
+        const char* nome = SkillFactory::nomeDe(sl.build.id);
+        std::snprintf(buf, sizeof(buf), "[%d] %s", i+1, nome);
+        desenharTexto(sx, sy, buf, 0.6f, 1.0f, 0.6f);
+        sy += 22.0f;
     }
 
-    gravarMatrizes();
+    // Sobrecarga
+    if (g_jogo.stand.emSobrecarga) {
+        desenharTexto(JANELA_W * 0.5f - 80.0f, JANELA_H * 0.5f + 60.0f,
+                      "SOBRECARGA!", 1.0f, 0.2f, 0.0f);
+    }
 
+    // Game Over
+    if (g_jogoTerminado) {
+        desenharTexto(JANELA_W * 0.5f - 80.0f, JANELA_H * 0.5f,
+                      "GAME OVER — [R] Reiniciar", 1.0f, 0.2f, 0.2f);
+    }
+
+    sairModo2D();
+}
+
+// =============================================================================
+//  MENU DE LEVEL-UP
+// =============================================================================
+
+static void desenharMenuLevelUp() {
+    if (!g_jogo.pausadoParaUpgrade) return;
+
+    entrarModo2D();
+
+    // Fundo semi-transparente
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glColor4f(0.0f, 0.0f, 0.0f, 0.65f);
+    glBegin(GL_QUADS);
+        glVertex2f(0, 0); glVertex2f(JANELA_W, 0);
+        glVertex2f(JANELA_W, JANELA_H); glVertex2f(0, JANELA_H);
+    glEnd();
+    glDisable(GL_BLEND);
+
+    desenharTexto(JANELA_W * 0.5f - 80.0f, JANELA_H - 120.0f,
+                  "LEVEL UP! Escolha uma melhoria:", 1.0f, 0.9f, 0.2f);
+
+    MenuLevelUp& menu = g_jogo.menuAtual;
+    float cardW = 260.0f, cardH = 100.0f;
+    float totalW = menu.quantidade * cardW + (menu.quantidade - 1) * 20.0f;
+    float startX = (JANELA_W - totalW) * 0.5f;
+    float startY = JANELA_H * 0.5f - cardH * 0.5f;
+
+    for (int i = 0; i < menu.quantidade; ++i) {
+        LevelUpChoice& c = menu.escolhas[i];
+        float cx = startX + i * (cardW + 20.0f);
+
+        // Cor da raridade
+        float rR, rG, rB;
+        corRaridade(c.raridade, rR, rG, rB);
+
+        // Fundo do card
+        glColor3f(0.1f, 0.1f, 0.15f);
+        glBegin(GL_QUADS);
+            glVertex2f(cx, startY);
+            glVertex2f(cx+cardW, startY);
+            glVertex2f(cx+cardW, startY+cardH);
+            glVertex2f(cx, startY+cardH);
+        glEnd();
+        // Borda colorida
+        glColor3f(rR, rG, rB);
+        glBegin(GL_LINE_LOOP);
+            glVertex2f(cx, startY);
+            glVertex2f(cx+cardW, startY);
+            glVertex2f(cx+cardW, startY+cardH);
+            glVertex2f(cx, startY+cardH);
+        glEnd();
+
+        // Número da tecla
+        char buf[4];
+        std::snprintf(buf, sizeof(buf), "[%d]", i+1);
+        desenharTexto(cx + 8.0f, startY + cardH - 22.0f, buf, rR, rG, rB);
+
+        // Descrição e subtítulo
+        desenharTexto(cx + 8.0f, startY + 60.0f,
+                      c.descricao, 1.0f, 1.0f, 1.0f);
+        desenharTexto(cx + 8.0f, startY + 35.0f,
+                      c.subtitulo, 0.7f, 0.7f, 0.8f);
+    }
+
+    sairModo2D();
+}
+
+// =============================================================================
+//  PROJEÇÃO DO MOUSE NO MUNDO
+// =============================================================================
+
+static Vetor3D projetarMouseNoMundo(int mx, int my) {
+    // Inversão de Y (OpenGL: y=0 no fundo, GLUT: y=0 no topo)
+    int viewport[4];
+    double model[16], proj[16];
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    glGetDoublev(GL_MODELVIEW_MATRIX, model);
+    glGetDoublev(GL_PROJECTION_MATRIX, proj);
+
+    double winY = viewport[3] - my;
+    float depth;
+    glReadPixels(mx, (int)winY, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &depth);
+
+    double wx, wy, wz;
+    gluUnProject(mx, winY, depth, model, proj, viewport, &wx, &wy, &wz);
+
+    Vetor3D v;
+    v.x = (float)wx; v.y = 0.0f; v.z = (float)wz;
+    return v;
+}
+
+// =============================================================================
+//  CALLBACKS GLUT
+// =============================================================================
+
+static void cbDisplay() {
+    desenharCena();
     desenharHUD();
-
+    desenharMenuLevelUp();
     glutSwapBuffers();
 }
 
-// ---------------------------------------------------------------------------
-// Redimensionamento de janela
-// ---------------------------------------------------------------------------
-void redimensionar(int w, int h) {
-    if (h == 0) h = 1;
-    JANELA_W = w;
-    JANELA_H = h;
-    glViewport(0, 0, w, h);
+static float g_ultimoTempo = 0.0f;
 
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    float aspecto = (float)w / (float)h;
-    glOrtho(-CAM_ORTHO * aspecto,  CAM_ORTHO * aspecto,
-            -CAM_ORTHO,             CAM_ORTHO,
-             CAM_Z_NEAR,            CAM_Z_FAR);
-    glMatrixMode(GL_MODELVIEW);
-}
+static void cbIdle() {
+    float agora = glutGet(GLUT_ELAPSED_TIME) / 1000.0f;
+    float dt    = agora - g_ultimoTempo;
+    g_ultimoTempo = agora;
+    if (dt > 0.05f) dt = 0.05f;   // cap de 50ms para evitar pulos grandes
 
-// ---------------------------------------------------------------------------
-// Teclado
-//
-//  CORREÇÃO P3: tecla 'E' fecha a tela de level up imediatamente,
-//  retomando o jogo sem nenhum timer artificial.
-// ---------------------------------------------------------------------------
-void pressionarTecla(unsigned char key, int x, int y) {
-    teclasPressionadas[key] = true;
-
-    // Se estiver na tela de Level Up (FASE 6) ...
-    if (jogo.pausadoParaUpgrade) {
-        int escolha = -1;
-        if (key == '1') escolha = 0;
-        if (key == '2') escolha = 1;
-        if (key == '3') escolha = 2;
-
-        if (escolha >= 0 && escolha < jogo.menuAtual.quantidade) {
-            // Aplica a escolha do novo sistema de progressão
-            aplicarEscolhaMenu(jogo, escolha);
-            jogo.pausadoParaUpgrade = false;
-            tempoAnterior = glutGet(GLUT_ELAPSED_TIME);
-        }
-        return;
-    }
-
-    // Sistema de Pausa Manual (Tecla P ou ESC)
-    if ((key == 'p' || key == 'P' || key == 27) && jogo.protagonista.vivo) {
-        jogo.jogoPausado = !jogo.jogoPausado;
-        if (!jogo.jogoPausado) {
-            // Sincroniza o timer ao voltar para evitar falhas físicas (pulo de frames)
-            tempoAnterior = glutGet(GLUT_ELAPSED_TIME);
-        }
-        return;
-    }
-
-    if (key == ' ') {
-        tentarAtivarParry(jogo.stand);
-    }
-
-    if ((key == 'r' || key == 'R') && !jogo.protagonista.vivo) {
-        jogo.horda.clear();
-        skillManager.limparInstancias();
-        jogo.gemas.clear();
-        inicializarJogo(); 
-    }
-}
-
-void soltarTecla(unsigned char key, int x, int y) {
-    teclasPressionadas[key] = false;
-}
-
-// ---------------------------------------------------------------------------
-// Mouse
-//
-//  Cada GLUT_DOWN cria um projétil e levanta disparouNesteFrame.
-//  O timer() lê essa flag para subir a tensão e a reseta imediatamente depois.
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// Mouse
-// ---------------------------------------------------------------------------
-void cliqueMouse(int button, int state, int x, int y) {
-    // Impede cliques acidentais durante o Level Up ou Pausa Manual
-    if (jogo.pausadoParaUpgrade || jogo.jogoPausado) {
-        return; 
-    }
-
-    if (button == GLUT_LEFT_BUTTON && state == GLUT_DOWN) {
-        if (!jogo.stand.emSobrecarga) {
-            Vetor3D posicaoAlvo = cliqueParaMundo(x, y);
-            skillManager.executar(jogo, posicaoAlvo);   // motor data-driven
-            disparouNesteFrame = true;
-        }
-    }
-}
-// ---------------------------------------------------------------------------
-// Processamento de movimento
-//
-//  CORREÇÃO P4: normalização vetorial correta usando sqrtf().
-//  O vetor (dx, dz) é calculado somando as contribuições de cada tecla
-//  (cada tecla pode contribuir +/-1 em cada eixo), depois é normalizado
-//  se seu comprimento for > 0. Isso garante velocidade idêntica em qualquer
-//  combinação de teclas, inclusive diagonais de 45° ou 22.5°.
-//
-//  Mapeamento WASD para eixos isométricos (câmera 45°Y):
-//    W → frente-direita (dx+, dz-)
-//    S → trás-esquerda  (dx-, dz+)
-//    D → frente-esquerda(dx+, dz+)
-//    A → trás-direita   (dx-, dz-)
-// ---------------------------------------------------------------------------
-void processarMovimento(float deltaTime) {
-    float dx = 0.0f;
-    float dz = 0.0f;
-
-    if (teclasPressionadas['w'] || teclasPressionadas['W']) { dx += 1.0f; dz -= 1.0f; }
-    if (teclasPressionadas['s'] || teclasPressionadas['S']) { dx -= 1.0f; dz += 1.0f; }
-    if (teclasPressionadas['d'] || teclasPressionadas['D']) { dx += 1.0f; dz += 1.0f; }
-    if (teclasPressionadas['a'] || teclasPressionadas['A']) { dx -= 1.0f; dz -= 1.0f; }
-
-    // Normalização vetorial completa — garante velocidade constante
-    float comprimento = sqrtf(dx * dx + dz * dz);
-    if (comprimento > 0.0001f) {
-        dx /= comprimento;
-        dz /= comprimento;
-    }
-
-    moverJogador(jogo.protagonista, dx, dz, deltaTime);
-    atualizarEntidade(jogo.stand, jogo.protagonista);
-}
-
-// ---------------------------------------------------------------------------
-// Loop principal
-//
-//  CORREÇÃO P3: quando pausadoParaUpgrade == true, o loop não avança nenhuma
-//  lógica de jogo — nem timers, nem IA, nem movimento, nem spawn.
-//  O frame continua sendo redesenhado (para manter a tela de level up visível)
-//  mas absolutamente nada do estado do jogo é modificado.
-//  A pausa é desativada apenas quando o jogador pressiona E (em pressionarTecla).
-// ---------------------------------------------------------------------------
-void timer(int value) {
-    // PAUSA INSTANTÂNEA: Nenhuma lógica executa durante upgrades
-    if (jogo.pausadoParaUpgrade) {
-        glutPostRedisplay();
-        glutTimerFunc(16, timer, 0);
-        return;
-    }
-
-    // PAUSA MANUAL
-    if (jogo.jogoPausado) {
-        glutPostRedisplay();
-        glutTimerFunc(16, timer, 0);
-        return;
-    }
-
-    int tempoAtual  = glutGet(GLUT_ELAPSED_TIME);
-    float deltaTime = (tempoAtual - tempoAnterior) / 1000.0f;
-    tempoAnterior   = tempoAtual;
-
-    // Limita deltaTime para evitar saltos grandes após pausa ou lag
-    if (deltaTime > 0.1f) deltaTime = 0.1f;
-
-    if (!jogo.protagonista.vivo) {
-        glutPostRedisplay();
-        glutTimerFunc(16, timer, 0);
-        return;
-    }
-
-    jogo.tempoSobrevivido += deltaTime;
-
-    processarMovimento(deltaTime);
-
-    // Transfere o flag de disparo para o estado do jogo e imediatamente limpa.
-    // Só fica true no frame exato em que cliqueMouse() criou um projétil.
-    // Isso garante: atirar = tensão sobe; não atirar = tensão cai.
-    jogo.atirandoAgora = disparouNesteFrame;
-    disparouNesteFrame = false;
-
-    atualizarTimersStand(jogo, deltaTime);
-    atualizarTensao(jogo, deltaTime);
-    tentarExecutarParry(jogo);
-
-    processarSpawn(jogo, deltaTime);
-    processarIA(jogo, deltaTime);
-
-    // ── Colisão e movimento: motor data-driven unificado ──────────────────
-    // atualizarTodos() faz: construirGrade + mover/colidir todas as instâncias
-    // (executarSkill) + processarColisaoZumbiJogador_Grade. O movimento dos
-    // projéteis agora vive no executor (MOV_LINEAR), não mais em atualizarProjeteis.
-    skillManager.atualizarTodos(jogo, gradeEspacial, deltaTime);
-
-    // processarColaDeGemas pode ativar pausadoParaUpgrade neste mesmo frame.
-    // O loop principal só vai pausar na PRÓXIMA chamada de timer(), mas o
-    // display() já vai mostrar a tela de level up neste mesmo frame porque
-    // lê jogo.pausadoParaUpgrade em tempo real.
-    processarColetaDeGemas(jogo);
-    processarLevelUp(jogo);
-    
-    static float temporizadorLimpeza = 0.0f;
-    temporizadorLimpeza += deltaTime;
-    if (temporizadorLimpeza >= 5.0f) {
-        limparEntidadesInativas(jogo);
-        temporizadorLimpeza = 0.0f;
+    if (!g_jogo.jogoPausado && !g_jogoTerminado) {
+        atualizarJogador(dt);
+        atualizarZumbis(dt);
+        g_skills.atualizarTodos(g_jogo, g_grade, dt);
+        atualizarParticulas(dt);
+        atualizarFloatingDamage(dt);
+        atualizarSpawn(dt);
+        g_jogo.houveMorteRecente = false;   // resetar hook KILLEDENEMY
     }
 
     glutPostRedisplay();
-    glutTimerFunc(16, timer, 0);
 }
 
-// ---------------------------------------------------------------------------
-// main
-// ---------------------------------------------------------------------------
+static void cbMouse(int button, int state, int x, int y) {
+    if (button == GLUT_LEFT_BUTTON) {
+        g_cliqueMouse = (state == GLUT_DOWN);
+        if (state == GLUT_DOWN && !g_jogo.jogoPausado)
+            g_posicaoCursor = projetarMouseNoMundo(x, y);
+    }
+}
+
+static void cbMotion(int x, int y) {
+    g_posicaoCursor = projetarMouseNoMundo(x, y);
+}
+
+static void cbPassiveMotion(int x, int y) {
+    g_posicaoCursor = projetarMouseNoMundo(x, y);
+}
+
+static void cbKeyboard(unsigned char key, int /*x*/, int /*y*/) {
+    switch (key) {
+        // Movimento
+        case 'w': case 'W': g_teclaW = true; break;
+        case 's': case 'S': g_teclaS = true; break;
+        case 'a': case 'A': g_teclaA = true; break;
+        case 'd': case 'D': g_teclaD = true; break;
+
+        // Reiniciar
+        case 'r': case 'R':
+            if (g_jogoTerminado) {
+                g_jogoTerminado = false;
+                g_skills.limparTodos();
+                inicializarEstadoJogo();
+            }
+            break;
+
+        // Escolha de level-up (teclas 1, 2, 3)
+        case '1': case '2': case '3': {
+            if (g_jogo.pausadoParaUpgrade) {
+                int idx = (key - '1');
+                if (idx < g_jogo.menuAtual.quantidade) {
+                    aplicarEscolhaLevelUp(g_jogo.menuAtual.escolhas[idx],
+                                          g_jogo.inventario,
+                                          g_jogo.protagonista.upgrades,
+                                          g_skills,
+                                          g_jogo.protagonista);
+                    g_jogo.pausadoParaUpgrade = false;
+                    g_jogo.jogoPausado        = false;
+                }
+            }
+            break;
+        }
+
+        // Parry (tecla Q)
+        case 'q': case 'Q':
+            if (g_jogo.stand.temporizadorCooldown <= 0.0f) {
+                g_jogo.stand.parryAtivo          = true;
+                g_jogo.stand.temporizadorParry   = 0.15f;
+                g_jogo.stand.temporizadorCooldown = g_jogo.stand.cooldownParry;
+            }
+            break;
+
+        // Sair
+        case 27:   // ESC
+            std::exit(0);
+            break;
+    }
+}
+
+static void cbKeyboardUp(unsigned char key, int /*x*/, int /*y*/) {
+    switch (key) {
+        case 'w': case 'W': g_teclaW = false; break;
+        case 's': case 'S': g_teclaS = false; break;
+        case 'a': case 'A': g_teclaA = false; break;
+        case 'd': case 'D': g_teclaD = false; break;
+    }
+}
+
+static void cbReshape(int w, int h) {
+    glViewport(0, 0, w, h);
+}
+
+// =============================================================================
+//  STUB: aplicarEscolhaMenu (declarado em SkillInventory.h — implementado aqui)
+// =============================================================================
+
+void aplicarEscolhaMenu(EstadoDoJogo& jogo, int indiceEscolha) {
+    if (indiceEscolha < 0 || indiceEscolha >= jogo.menuAtual.quantidade) return;
+    aplicarEscolhaLevelUp(jogo.menuAtual.escolhas[indiceEscolha],
+                          jogo.inventario,
+                          jogo.protagonista.upgrades,
+                          g_skills,
+                          jogo.protagonista);
+    jogo.pausadoParaUpgrade = false;
+    jogo.jogoPausado        = false;
+}
+
+// =============================================================================
+//  MAIN
+// =============================================================================
+
 int main(int argc, char** argv) {
+    std::srand((unsigned int)std::time(NULL));
+
+    // 1. GLUT
     glutInit(&argc, argv);
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH);
     glutInitWindowSize(JANELA_W, JANELA_H);
-    glutCreateWindow("Stand Survivor — Isometrico 3D");
+    glutCreateWindow("Stand — Fase 6.5");
 
-    inicializarJogo();
-    gravarMatrizes();
+    // 2. Catálogo de skills
+    registrarSkillsPadrao();
 
-    glutDisplayFunc(display);
-    glutReshapeFunc(redimensionar);
-    glutKeyboardFunc(pressionarTecla);
-    glutKeyboardUpFunc(soltarTecla);
-    glutMouseFunc(cliqueMouse);
+    // 3. Estado do jogo e build inicial
+    inicializarEstadoJogo();
 
-    tempoAnterior = glutGet(GLUT_ELAPSED_TIME);
-    glutTimerFunc(0, timer, 0);
+    // 4. Callbacks
+    glutDisplayFunc(cbDisplay);
+    glutIdleFunc(cbIdle);
+    glutMouseFunc(cbMouse);
+    glutMotionFunc(cbMotion);
+    glutPassiveMotionFunc(cbPassiveMotion);
+    glutKeyboardFunc(cbKeyboard);
+    glutKeyboardUpFunc(cbKeyboardUp);
+    glutReshapeFunc(cbReshape);
+
+    // 5. OpenGL
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_LINE_SMOOTH);
+    glLineWidth(1.5f);
+
+    g_ultimoTempo = glutGet(GLUT_ELAPSED_TIME) / 1000.0f;
 
     glutMainLoop();
     return 0;

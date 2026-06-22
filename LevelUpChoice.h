@@ -17,21 +17,6 @@
 #define ESCOLHA_SUB_MAX     _ESCOLHA_SUB_MAX
 
 // ---------------------------------------------------------------------------
-// limparMenu
-// ---------------------------------------------------------------------------
-inline void limparMenu(MenuLevelUp& m) {
-    m.quantidade = 0;
-    for (int i = 0; i < _MENU_MAX_ESCOLHAS; ++i) {
-        m.escolhas[i].tipo       = ESCOLHA_ATRIBUTO_GLOBAL;
-        m.escolhas[i].raridade   = RARIDADE_COMUM;
-        m.escolhas[i].referencia = -1;
-        m.escolhas[i].valorExtra = 0;
-        m.escolhas[i].descricao[0] = '\0';
-        m.escolhas[i].subtitulo[0] = '\0';
-    }
-}
-
-// ---------------------------------------------------------------------------
 // nomeRaridade — string descritivo para display
 // ---------------------------------------------------------------------------
 inline const char* nomeRaridade(EscolhaRaridade r) {
@@ -42,20 +27,6 @@ inline const char* nomeRaridade(EscolhaRaridade r) {
         case RARIDADE_EPICA:    return "Epica";
         case RARIDADE_LENDARIA: return "Lendaria";
         default:                return "";
-    }
-}
-
-// ---------------------------------------------------------------------------
-// corRaridade — RGB (0..1) para glColor3f em Main.cpp
-// ---------------------------------------------------------------------------
-inline void corRaridade(EscolhaRaridade r, float& red, float& grn, float& blu) {
-    switch (r) {
-        case RARIDADE_COMUM:    red=0.85f; grn=0.85f; blu=0.85f; return;
-        case RARIDADE_INCOMUM:  red=0.20f; grn=1.00f; blu=0.30f; return;
-        case RARIDADE_RARA:     red=0.30f; grn=0.60f; blu=1.00f; return;
-        case RARIDADE_EPICA:    red=0.80f; grn=0.20f; blu=1.00f; return;
-        case RARIDADE_LENDARIA: red=1.00f; grn=0.60f; blu=0.10f; return;
-        default:                red=1.00f; grn=1.00f; blu=1.00f; return;
     }
 }
 
