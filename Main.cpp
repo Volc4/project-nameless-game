@@ -1,4 +1,9 @@
 // =============================================================================
+//  Fase 3 — Feature Flag
+//  Comente a linha abaixo para voltar ao motor original sem nenhuma alteração.
+// =============================================================================
+
+// =============================================================================
 //  Stand Survivor — Main.cpp
 //  Renderização isométrica 3D clássica com OpenGL/GLUT
 //
@@ -16,6 +21,9 @@
 #include <GL/glut.h>
 #include "GameLogic.h"
 #include "SpatialGrid.h"
+#include "SkillRender.h"     // Fase 5: render despachado pela Forma
+#include "ProgressionSystem.h"
+#include "SkillRegistry.h"   // Fase 5: registro central de skills nomeadas
 #include <iostream>
 #include <cstdio>
 #include <cmath>
@@ -25,6 +33,7 @@
 // ---------------------------------------------------------------------------
 EstadoDoJogo jogo;
 GradeEspacial gradeEspacial;
+SkillManager skillManager;
 int tempoAnterior = 0;
 bool teclasPressionadas[256] = {false};
 bool disparouNesteFrame = false;  // setado em cliqueMouse, lido e limpo em timer()
@@ -421,24 +430,69 @@ void desenharInimigos() {
 }
 
 // ---------------------------------------------------------------------------
+// Primitivas de desenho da Fase 5 (usadas por SkillRender.h via despacho de
+// Forma). São genéricas: nenhuma "sabe" o que é uma skill. Mantêm o GL
+// concentrado em Main.cpp, deixando SkillRender.h livre de OpenGL.
+// ---------------------------------------------------------------------------
+void desenharLinha3D(float x0, float y, float z0,
+                     float x1, float z1,
+                     float largura,
+                     float r, float g, float b) {
+    glColor3f(r, g, b);
+    glLineWidth(largura * 10.0f + 1.0f);
+    glBegin(GL_LINES);
+        glVertex3f(x0, y, z0);
+        glVertex3f(x1, y, z1);
+    glEnd();
+    glLineWidth(1.0f);
+}
+
+void desenharCirculo3D(float cx, float y, float cz,
+                       float raio,
+                       float r, float g, float b) {
+    const int SEG = 32;
+    const float PI2 = 2.0f * 3.14159265f;
+    glColor3f(r, g, b);
+    glBegin(GL_LINE_LOOP);
+    for (int i = 0; i < SEG; ++i) {
+        float ang = (float)i / (float)SEG * PI2;
+        glVertex3f(cx + raio * cosf(ang), y, cz + raio * sinf(ang));
+    }
+    glEnd();
+}
+
+void desenharArco3D(float cx, float y, float cz,
+                    float raioInterno, float raioExterno,
+                    float anguloCentral, float meiaAbertura,
+                    float r, float g, float b) {
+    const int SEG = 24;
+    glColor3f(r, g, b);
+    glBegin(GL_QUAD_STRIP);
+    for (int i = 0; i <= SEG; ++i) {
+        float t   = (float)i / (float)SEG;
+        float ang = anguloCentral - meiaAbertura + t * (2.0f * meiaAbertura);
+        float c = cosf(ang), s = sinf(ang);
+        glVertex3f(cx + raioInterno * c, y, cz + raioInterno * s);
+        glVertex3f(cx + raioExterno * c, y, cz + raioExterno * s);
+    }
+    glEnd();
+}
+
+// ---------------------------------------------------------------------------
 // Renderização dos projéteis
+//
+//  FASE 6.5: itera TODOS os slots ativos do SkillManager. Cada slot possui
+//  sua própria SkillData (build) e pool de RuntimeSkill independente.
+//  A renderização depende apenas do componente Forma da build de cada slot
+//  (despacho em SkillRender.h), sem nenhum conhecimento de skill específica.
 // ---------------------------------------------------------------------------
 void desenharProjeteis() {
-    const float BASE_Y = 0.5f;
-    const float L      = 0.20f;
-    const float ALT    = 0.20f;
-
-    for (size_t i = 0; i < jogo.tirosNaTela.size(); ++i) {
-        const Projetil& p = jogo.tirosNaTela[i];
-        if (!p.ativo) continue;
-
-        desenharBloco3D(p.posicao.x, BASE_Y, p.posicao.z,
-                        L, L, ALT,
-                        1.0f,  1.0f,  0.20f,
-                        0.80f, 0.80f, 0.0f,
-                        0.55f, 0.55f, 0.0f,
-                        0.90f, 0.90f, 0.05f,
-                        0.65f, 0.65f, 0.0f);
+    for (int i = 0; i < skillManager.numSlots(); ++i) {
+        const SlotSkill& sl = skillManager.slot(i);
+        if (!sl.ativo) continue;
+        const std::vector<RuntimeSkill>& pool = sl.pool;
+        if (pool.empty()) continue;
+        desenharTodasSkills(sl.build, &pool[0], (int)pool.size());
     }
 }
 
@@ -720,10 +774,10 @@ void desenharHUD() {
     }
 
     // ---- Tela de Pausa ----
-    if (jogo.jogoPausado && !jogo.pausadoParaUpgrade && jogo.protagonista.vivo) {
+     if (jogo.pausadoParaUpgrade) {
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glColor4f(0.0f, 0.0f, 0.0f, 0.65f);
+        glColor4f(0.02f, 0.04f, 0.12f, 0.88f);
         glBegin(GL_QUADS);
             glVertex2f(0,        0);
             glVertex2f(JANELA_W, 0);
@@ -732,16 +786,68 @@ void desenharHUD() {
         glEnd();
         glDisable(GL_BLEND);
 
-        const char* msg1 = "JOGO PAUSADO";
-        const char* msg2 = "Pressione P ou ESC para continuar";
+        // Título
+        char buf[128];
+        sprintf(buf, "LEVEL UP!  Nivel %d", jogo.protagonista.nivel);
+        glColor3f(1.0f, 0.9f, 0.2f);
+        glRasterPos2f((float)JANELA_W / 2.0f - 95.0f,
+                      (float)JANELA_H / 2.0f + 80.0f);
+        for (const char* c = buf; *c; ++c)
+            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
 
-        glColor3f(1.0f, 1.0f, 1.0f);
-        glRasterPos2f((float)JANELA_W / 2.0f - 70.0f, (float)JANELA_H / 2.0f + 10.0f);
-        for (const char* c = msg1; *c; ++c) glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
+        // Instrução
+        const char* inst = "Escolha uma recompensa (1, 2 ou 3):";
+        glColor3f(0.80f, 0.80f, 0.80f);
+        glRasterPos2f((float)JANELA_W / 2.0f - 135.0f,
+                      (float)JANELA_H / 2.0f + 50.0f);
+        for (const char* c = inst; *c; ++c)
+            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
 
-        glColor3f(0.7f, 0.7f, 0.7f);
-        glRasterPos2f((float)JANELA_W / 2.0f - 105.0f, (float)JANELA_H / 2.0f - 15.0f);
-        for (const char* c = msg2; *c; ++c) glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
+        // Opções do novo menu (MenuLevelUp)
+        for (int i = 0; i < jogo.menuAtual.quantidade; ++i) {
+            const LevelUpChoice& op = jogo.menuAtual.escolhas[i];
+
+            float yr = (float)JANELA_H / 2.0f + 10.0f - (i * 50.0f);
+
+            // Cor da raridade
+            float rr, rg, rb;
+            corRaridade(op.raridade, rr, rg, rb);
+            glColor3f(rr, rg, rb);
+
+            // Linha principal
+            sprintf(buf, "[ %d ] %s", i + 1, op.descricao);
+            glRasterPos2f((float)JANELA_W / 2.0f - 170.0f, yr);
+            for (const char* c = buf; *c; ++c)
+                glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
+
+            // Subtítulo (linha menor)
+            if (op.subtitulo[0] != '\0') {
+                glColor3f(rr * 0.75f, rg * 0.75f, rb * 0.75f);
+                glRasterPos2f((float)JANELA_W / 2.0f - 155.0f, yr - 18.0f);
+                for (const char* c = op.subtitulo; *c; ++c)
+                    glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
+            }
+        }
+
+        // Painel de skills equipadas (lado direito, informativo)
+        glColor3f(0.50f, 0.60f, 0.70f);
+        glRasterPos2f((float)JANELA_W - 220.0f,
+                      (float)JANELA_H / 2.0f + 80.0f);
+        const char* titSkills = "Build Atual:";
+        for (const char* c = titSkills; *c; ++c)
+            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
+
+        for (int s = 0; s < jogo.inventario.numEquipadas; ++s) {
+            int id = jogo.inventario.equipadas[s];
+            if (id < 0) continue;
+            int nv = jogo.inventario.nivelSkill[id];
+            sprintf(buf, "  %s  Nv.%d", SkillFactory::nomeDe(id), nv);
+            glColor3f(0.60f, 0.80f, 1.0f);
+            glRasterPos2f((float)JANELA_W - 215.0f,
+                          (float)JANELA_H / 2.0f + 60.0f - s * 20.0f);
+            for (const char* c = buf; *c; ++c)
+                glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
+        }
     }
 
     // ---- Tela de morte ----
@@ -769,59 +875,7 @@ void desenharHUD() {
             glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
     }
 
-    // ---- Tela de Level Up (Seleção de Melhoria) ----
-    // Mostrada enquanto jogo.pausadoParaUpgrade == true.
-    // Jogador pressiona 1, 2 ou 3 para escolher (tratado em pressionarTecla).
-    if (jogo.pausadoParaUpgrade) {
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glColor4f(0.02f, 0.04f, 0.12f, 0.85f);
-        glBegin(GL_QUADS);
-            glVertex2f(0,        0);
-            glVertex2f(JANELA_W, 0);
-            glVertex2f(JANELA_W, JANELA_H);
-            glVertex2f(0,        JANELA_H);
-        glEnd();
-        glDisable(GL_BLEND);
-
-        char buf[64];
-        sprintf(buf, "LEVEL UP!  Nivel %d", jogo.protagonista.nivel);
-        glColor3f(1.0f, 0.9f, 0.2f);
-        glRasterPos2f((float)JANELA_W / 2.0f - 85.0f, (float)JANELA_H / 2.0f + 60.0f);
-        for (const char* c = buf; *c; ++c)
-            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
-
-        glColor3f(0.85f, 0.85f, 0.85f);
-        const char* inst = "Escolha uma melhoria pressionando 1, 2 ou 3:";
-        glRasterPos2f((float)JANELA_W / 2.0f - 160.0f, (float)JANELA_H / 2.0f + 30.0f);
-        for (const char* c = inst; *c; ++c)
-            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
-
-        // Renderiza as opções dinâmicas
-        for (int i = 0; i < jogo.quantidadeOpcoes; ++i) {
-            TipoUpgrade tipoOpt  = jogo.opcoesUpgrade[i];
-            int nivelAtual = jogo.protagonista.upgrades.niveis[tipoOpt];
-
-            sprintf(buf, "[ %d ] - %s (Nivel %d -> %d)",
-                    i + 1,
-                    obterNomeUpgrade(tipoOpt),
-                    nivelAtual,
-                    nivelAtual + 1);
-
-            // Verde se atingir nível máximo, azul claro caso contrário
-            if (nivelAtual + 1 == NIVEL_MAXIMO_UPGRADE)
-                glColor3f(0.2f, 1.0f, 0.2f);
-            else
-                glColor3f(0.6f, 0.8f, 1.0f);
-
-            glRasterPos2f((float)JANELA_W / 2.0f - 140.0f,
-                          (float)JANELA_H / 2.0f - (i * 30.0f));
-            for (const char* c = buf; *c; ++c)
-                glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
-        }
-    }
-
-    // ---- Restauração das matrizes ----  (CORREÇÃO: sempre ao final, fora de qualquer bloco)
+    // ---- Restauração das matrizes ----  (sempre ao final, fora de qualquer bloco)
     glPopMatrix();
     glMatrixMode(GL_PROJECTION);
     glPopMatrix();
@@ -836,6 +890,9 @@ void desenharHUD() {
 //  CORREÇÃO P1: raioColisao do jogador = 0.70 (= LARGURA visual do cubo).
 // ---------------------------------------------------------------------------
 void inicializarJogo() {
+    // Fase 5: popula a SkillFactory uma vez. Idempotente (re-registro atualiza).
+    registrarSkillsPadrao();
+
     jogo.protagonista.posicao.x = 0.0f;
     jogo.protagonista.posicao.y = 0.0f;
     jogo.protagonista.posicao.z = 0.0f;
@@ -847,10 +904,22 @@ void inicializarJogo() {
         jogo.protagonista.upgrades.niveis[i] = 0;
     }
     jogo.protagonista.hpMaximo          = HP_BASE;
-    jogo.contagemAtributosNivel2        = 0;
-    jogo.disparoEvoluido                = false;
-    jogo.stand.tipoDisparoAtual         = DISPARO_NORMAL;
     jogo.quantidadeOpcoes               = 0;
+
+    // FASE 6 — Inicializa inventário e menu de progressão
+    inicializarInventario(jogo.inventario);
+    limparMenu(jogo.menuAtual);
+
+    // FASE 6 — Modo de teste: ativa skill definida em SKILL_TESTE (se houver)
+    // Para testar: #define SKILL_TESTE "MissilVampirico" antes do #include
+    activarSkillTeste(jogo.inventario);
+
+    // FASE 6.5 — Monta a build completa em TODOS os slots do SkillManager.
+    // Esta é a ÚNICA chamada necessária: popula slots[0..N-1] independentes.
+    // reconstruirHabilidade() foi removida — era regressão que sobrescrevia
+    // o inventário com o sistema antigo de slot único.
+    montarBuildCompleta(jogo.inventario, jogo.protagonista.upgrades, skillManager);
+
     jogo.protagonista.temporizadorIframe = 0.0f;
     jogo.protagonista.duracaoIframe      = 1.2f;
     jogo.protagonista.xpAtual            = 0;
@@ -869,12 +938,7 @@ void inicializarJogo() {
     jogo.tempoSobrevivido    = 0.0f;
     jogo.tempoUltimoSpawn    = 0.0f;
     jogo.pausadoParaUpgrade  = false;
-    jogo.tempoSobrevivido    = 0.0f;
-    jogo.tempoUltimoSpawn    = 0.0f;
-    jogo.pausadoParaUpgrade  = false;
     jogo.jogoPausado         = false;
-    jogo.nivelAntesDaEscolha = 0;
-    jogo.atirandoAgora       = false;
     jogo.nivelAntesDaEscolha = 0;
     jogo.atirandoAgora       = false;
 
@@ -951,19 +1015,20 @@ void redimensionar(int w, int h) {
 void pressionarTecla(unsigned char key, int x, int y) {
     teclasPressionadas[key] = true;
 
-    // Se estiver na tela de Level Up...
+    // Se estiver na tela de Level Up (FASE 6) ...
     if (jogo.pausadoParaUpgrade) {
         int escolha = -1;
         if (key == '1') escolha = 0;
         if (key == '2') escolha = 1;
         if (key == '3') escolha = 2;
 
-        if (escolha >= 0 && escolha < jogo.quantidadeOpcoes) {
-            aplicarUpgrade(jogo, jogo.opcoesUpgrade[escolha]);
+        if (escolha >= 0 && escolha < jogo.menuAtual.quantidade) {
+            // Aplica a escolha do novo sistema de progressão
+            aplicarEscolhaMenu(jogo, escolha);
             jogo.pausadoParaUpgrade = false;
             tempoAnterior = glutGet(GLUT_ELAPSED_TIME);
         }
-        return; 
+        return;
     }
 
     // Sistema de Pausa Manual (Tecla P ou ESC)
@@ -982,7 +1047,7 @@ void pressionarTecla(unsigned char key, int x, int y) {
 
     if ((key == 'r' || key == 'R') && !jogo.protagonista.vivo) {
         jogo.horda.clear();
-        jogo.tirosNaTela.clear();
+        skillManager.limparInstancias();
         jogo.gemas.clear();
         inicializarJogo(); 
     }
@@ -1010,7 +1075,7 @@ void cliqueMouse(int button, int state, int x, int y) {
     if (button == GLUT_LEFT_BUTTON && state == GLUT_DOWN) {
         if (!jogo.stand.emSobrecarga) {
             Vetor3D posicaoAlvo = cliqueParaMundo(x, y);
-            dispararProjetil(jogo, posicaoAlvo);
+            skillManager.executar(jogo, posicaoAlvo);   // motor data-driven
             disparouNesteFrame = true;
         }
     }
@@ -1104,11 +1169,11 @@ void timer(int value) {
     processarSpawn(jogo, deltaTime);
     processarIA(jogo, deltaTime);
 
-    gradeEspacial.construirGrade(jogo);
-    processarColisoesTiros_Grade(jogo, gradeEspacial);
-    processarColisaoZumbiJogador_Grade(jogo, gradeEspacial, deltaTime);
-
-    atualizarProjeteis(jogo, deltaTime);
+    // ── Colisão e movimento: motor data-driven unificado ──────────────────
+    // atualizarTodos() faz: construirGrade + mover/colidir todas as instâncias
+    // (executarSkill) + processarColisaoZumbiJogador_Grade. O movimento dos
+    // projéteis agora vive no executor (MOV_LINEAR), não mais em atualizarProjeteis.
+    skillManager.atualizarTodos(jogo, gradeEspacial, deltaTime);
 
     // processarColaDeGemas pode ativar pausadoParaUpgrade neste mesmo frame.
     // O loop principal só vai pausar na PRÓXIMA chamada de timer(), mas o

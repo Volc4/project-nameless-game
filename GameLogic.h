@@ -3,6 +3,8 @@
 
 #include "Entities.h"
 #include "MathUtils.h"
+#include "SkillManager.h"
+#include "ProgressionSystem.h"
 #include <cstdlib>
 #include <cmath>
 
@@ -128,226 +130,9 @@ inline int calcularHPMaximo(int nivelVida) {
 
 // ===========================================================================
 // SEÇÃO: DETERMINAÇÃO DO TIPO DE DISPARO
+//   Removida — substituída pelo SkillManager (Habilidade.h + SkillManager.h).
+//   O dispatch de projéteis agora é feito via skillManager.executar().
 // ===========================================================================
-
-// Dado dois atributos (em qualquer ordem), retorna o TipoDisparo correspondente.
-// A tabela foi construída garantindo que a + b seja sempre o mesmo
-// independente da ordem: normalizamos para a < b antes de consultar.
-// Entrada: dois TipoUpgrade distintos que chegaram ao nível 2
-// Saída:   TipoDisparo correspondente à combinação
-inline TipoDisparo determinarTipoDisparo(TipoUpgrade a, TipoUpgrade b) {
-    // Normaliza: garante a < b para lookup simples
-    if ((int)a > (int)b) {
-        TipoUpgrade tmp = a;
-        a = b;
-        b = tmp;
-    }
-
-    // Tabela de 15 combinações (C(6,2))
-    if (a == DANO       && b == CADENCIA)   return DISPARO_DANO_CADENCIA;
-    if (a == DANO       && b == PERFURACAO) return DISPARO_DANO_PERFURACAO;
-    if (a == DANO       && b == TENSAO_UP)  return DISPARO_DANO_TENSAO;
-    if (a == DANO       && b == VELOCIDADE) return DISPARO_DANO_VELOCIDADE;
-    if (a == DANO       && b == VIDA)       return DISPARO_DANO_VIDA;
-    if (a == CADENCIA   && b == PERFURACAO) return DISPARO_CADENCIA_PERFURACAO;
-    if (a == CADENCIA   && b == TENSAO_UP)  return DISPARO_CADENCIA_TENSAO;
-    if (a == CADENCIA   && b == VELOCIDADE) return DISPARO_CADENCIA_VELOCIDADE;
-    if (a == CADENCIA   && b == VIDA)       return DISPARO_CADENCIA_VIDA;
-    if (a == PERFURACAO && b == TENSAO_UP)  return DISPARO_PERFURACAO_TENSAO;
-    if (a == PERFURACAO && b == VELOCIDADE) return DISPARO_PERFURACAO_VELOCIDADE;
-    if (a == PERFURACAO && b == VIDA)       return DISPARO_PERFURACAO_VIDA;
-    if (a == TENSAO_UP  && b == VELOCIDADE) return DISPARO_TENSAO_VELOCIDADE;
-    if (a == TENSAO_UP  && b == VIDA)       return DISPARO_TENSAO_VIDA;
-    if (a == VELOCIDADE && b == VIDA)       return DISPARO_VELOCIDADE_VIDA;
-
-    return DISPARO_NORMAL; // Fallback de segurança
-}
-
-// ===========================================================================
-// SEÇÃO: INSTANCIAÇÃO DE PROJÉTEIS
-//
-// instanciarProjetil() configura cada campo do projétil de acordo com o
-// TipoDisparo ativo na partida.  Cada combinação altera ao menos dois
-// parâmetros que afetam a jogabilidade de forma distinta.
-// ===========================================================================
-
-// Entrada: jogo (para ler upgrades e tipo de disparo), posicaoAlvo (alvo do clique)
-// Saída:   Projetil completamente configurado, pronto para push_back
-inline Projetil instanciarProjetil(const EstadoDoJogo& jogo, Vetor3D posicaoAlvo) {
-    Projetil p;
-    p.posicao    = jogo.stand.posicao;
-    p.direcao    = obterDirecaoNormalizada(jogo.stand.posicao, posicaoAlvo);
-    p.ativo      = true;
-
-    // Valores base derivados dos upgrades individuais
-    int   danoBase   = calcularDanoBase(jogo.protagonista.upgrades.niveis[DANO]);
-    int   perfBase   = calcularPerfuracaoBase(jogo.protagonista.upgrades.niveis[PERFURACAO]);
-
-    // Defaults antes de aplicar comportamento do tipo de disparo
-    p.dano              = danoBase;
-    p.velocidade        = 20.0f;
-    p.raioColisao       = 0.20f;
-    p.perfuracaoRestante = perfBase;
-
-    switch (jogo.stand.tipoDisparoAtual) {
-
-        // --------------------------------------------------------------
-        // DANO + CADENCIA: projéteis maiores, mais dano, alta velocidade
-        // --------------------------------------------------------------
-        case DISPARO_DANO_CADENCIA:
-            p.dano        = danoBase + 2;
-            p.velocidade  = 28.0f;
-            p.raioColisao = 0.38f;
-            break;
-
-        // --------------------------------------------------------------
-        // DANO + PERFURAÇÃO: muito dano, atravessa vários inimigos
-        // --------------------------------------------------------------
-        case DISPARO_DANO_PERFURACAO:
-            p.dano               = danoBase + 3;
-            p.velocidade         = 22.0f;
-            p.raioColisao        = 0.25f;
-            p.perfuracaoRestante = perfBase + 3;
-            break;
-
-        // --------------------------------------------------------------
-        // DANO + TENSÃO: tiros que drenam menos tensão (redução 50%)
-        //   → jogador pode atirar mais antes de entrar em sobrecarga
-        //   → representa o atributo TENSAO_UP beneficiando o disparo
-        // --------------------------------------------------------------
-        case DISPARO_DANO_TENSAO:
-            p.dano       = danoBase + 2;
-            p.velocidade = 20.0f;
-            // raioColisao menor = tiro mais preciso, menos tensão por acerto
-            p.raioColisao = 0.15f;
-            break;
-
-        // --------------------------------------------------------------
-        // DANO + VELOCIDADE: projéteis extremamente rápidos, muito dano
-        // --------------------------------------------------------------
-        case DISPARO_DANO_VELOCIDADE:
-            p.dano       = danoBase + 3;
-            p.velocidade = 36.0f;
-            p.raioColisao = 0.18f;
-            break;
-
-        // --------------------------------------------------------------
-        // DANO + VIDA: tiros pesados e lentos, mas com alto dano
-        //   Compensa baixa velocidade com hitbox maior
-        // --------------------------------------------------------------
-        case DISPARO_DANO_VIDA:
-            p.dano        = danoBase + 4;
-            p.velocidade  = 14.0f;
-            p.raioColisao = 0.42f;
-            break;
-
-        // --------------------------------------------------------------
-        // CADÊNCIA + PERFURAÇÃO: rajadas que atravessam vários inimigos
-        // --------------------------------------------------------------
-        case DISPARO_CADENCIA_PERFURACAO:
-            p.dano               = danoBase;
-            p.velocidade         = 26.0f;
-            p.raioColisao        = 0.18f;
-            p.perfuracaoRestante = perfBase + 4;
-            break;
-
-        // --------------------------------------------------------------
-        // CADÊNCIA + TENSÃO: tiros rápidos que acumulam pouca tensão
-        //   → cadência alta + duração do tiroteio prolongada
-        // --------------------------------------------------------------
-        case DISPARO_CADENCIA_TENSAO:
-            p.dano        = danoBase;
-            p.velocidade  = 24.0f;
-            p.raioColisao = 0.16f;
-            break;
-
-        // --------------------------------------------------------------
-        // CADÊNCIA + VELOCIDADE: projéteis ultrarrápidos em sequência
-        // --------------------------------------------------------------
-        case DISPARO_CADENCIA_VELOCIDADE:
-            p.dano        = danoBase;
-            p.velocidade  = 40.0f;
-            p.raioColisao = 0.15f;
-            break;
-
-        // --------------------------------------------------------------
-        // CADÊNCIA + VIDA: tiros médios que curam lentamente ao acertar
-        //   Mecânica de cura implementada em processarColisoesTiros()
-        // --------------------------------------------------------------
-        case DISPARO_CADENCIA_VIDA:
-            p.dano        = danoBase;
-            p.velocidade  = 22.0f;
-            p.raioColisao = 0.22f;
-            break;
-
-        // --------------------------------------------------------------
-        // PERFURAÇÃO + TENSÃO: atravessa muitos inimigos, menor tensão
-        // --------------------------------------------------------------
-        case DISPARO_PERFURACAO_TENSAO:
-            p.dano               = danoBase;
-            p.velocidade         = 20.0f;
-            p.raioColisao        = 0.20f;
-            p.perfuracaoRestante = perfBase + 5;
-            break;
-
-        // --------------------------------------------------------------
-        // PERFURAÇÃO + VELOCIDADE: tiro rápido que atravessa hordas
-        // --------------------------------------------------------------
-        case DISPARO_PERFURACAO_VELOCIDADE:
-            p.dano               = danoBase;
-            p.velocidade         = 32.0f;
-            p.raioColisao        = 0.20f;
-            p.perfuracaoRestante = perfBase + 3;
-            break;
-
-        // --------------------------------------------------------------
-        // PERFURAÇÃO + VIDA: projétil lento e pesado, atravessa tudo
-        // --------------------------------------------------------------
-        case DISPARO_PERFURACAO_VIDA:
-            p.dano               = danoBase + 2;
-            p.velocidade         = 12.0f;
-            p.raioColisao        = 0.35f;
-            p.perfuracaoRestante = perfBase + 6;
-            break;
-
-        // --------------------------------------------------------------
-        // TENSÃO + VELOCIDADE: rápido, acumula pouca tensão
-        // --------------------------------------------------------------
-        case DISPARO_TENSAO_VELOCIDADE:
-            p.dano        = danoBase;
-            p.velocidade  = 34.0f;
-            p.raioColisao = 0.16f;
-            break;
-
-        // --------------------------------------------------------------
-        // TENSÃO + VIDA: tiro que restaura uma fração de tensão ao acertar
-        //   Mecânica especial em processarColisoesTiros()
-        // --------------------------------------------------------------
-        case DISPARO_TENSAO_VIDA:
-            p.dano        = danoBase + 1;
-            p.velocidade  = 18.0f;
-            p.raioColisao = 0.25f;
-            break;
-
-        // --------------------------------------------------------------
-        // VELOCIDADE + VIDA: tiro rápido com hitbox grande
-        // --------------------------------------------------------------
-        case DISPARO_VELOCIDADE_VIDA:
-            p.dano        = danoBase + 1;
-            p.velocidade  = 30.0f;
-            p.raioColisao = 0.30f;
-            break;
-
-        // DISPARO_NORMAL ou qualquer fallback: usa valores padrão já setados
-        default:
-            break;
-    }
-
-    float multiplicadorTamanho = calcularMultiplicadorTamanho(jogo.protagonista.upgrades.niveis[DANO]);
-    p.raioColisao *= multiplicadorTamanho;
-
-    return p;
-}
 
 // ===========================================================================
 // SEÇÃO: SISTEMA DE UPGRADES
@@ -368,115 +153,61 @@ inline bool existemUpgradesDisponiveis(const SistemaUpgrades& upgrades) {
 // Entrada: jogo (para ler níveis e preencher opcoesUpgrade / quantidadeOpcoes)
 // Saída:   modifica jogo.opcoesUpgrade e jogo.quantidadeOpcoes in-place
 inline void sortearUpgrades(EstadoDoJogo& jogo) {
-    // Monta pool de candidatos válidos
-    TipoUpgrade candidatos[TOTAL_UPGRADES];
-    int numCandidatos = 0;
+    // FASE 6: delega ao ProgressionSystem o sorteio dos 3 tipos de recompensa.
+    // O resultado fica em jogo.menuAtual (MenuLevelUp), não mais em opcoesUpgrade[].
+    sortearRecompensas(jogo.menuAtual, jogo.inventario);
+    jogo.quantidadeOpcoes = jogo.menuAtual.quantidade;   // compatibilidade legado
+}
 
-    for (int i = 0; i < TOTAL_UPGRADES; ++i) {
-        if (jogo.protagonista.upgrades.niveis[i] < NIVEL_MAXIMO_UPGRADE) {
-            candidatos[numCandidatos] = (TipoUpgrade)i;
-            numCandidatos++;
-        }
-    }
+// ---------------------------------------------------------------------------
+// SUBSTITUI aplicarUpgrade(EstadoDoJogo&, TipoUpgrade)
+//
+// A assinatura legada é mantida para retrocompatibilidade com qualquer código
+// que ainda a chame. Internamente, ela delega ao ProgressionSystem caso a
+// escolha venha do menuAtual. Se `tipo` for chamado diretamente (ex: testes),
+// cria uma LevelUpChoice de atributo global e aplica.
+// ---------------------------------------------------------------------------
+inline void aplicarUpgrade(EstadoDoJogo& jogo, TipoUpgrade tipo) {
+    LevelUpChoice escolha;
+    escolha.tipo       = ESCOLHA_ATRIBUTO_GLOBAL;
+    escolha.raridade   = RARIDADE_COMUM;
+    escolha.referencia = (int)tipo;
+    escolha.valorExtra = 1;
+    escolha.descricao[0] = '\0';
+    escolha.subtitulo[0] = '\0';
 
-    // Fisher-Yates parcial: embaralha apenas os primeiros 3 do pool
-    int limite = (numCandidatos < 3) ? numCandidatos : 3;
-    for (int i = 0; i < limite; ++i) {
-        int j = i + rand() % (numCandidatos - i);
-        TipoUpgrade tmp  = candidatos[i];
-        candidatos[i]    = candidatos[j];
-        candidatos[j]    = tmp;
-    }
-
-    jogo.quantidadeOpcoes = limite;
-    for (int i = 0; i < limite; ++i)
-        jogo.opcoesUpgrade[i] = candidatos[i];
+    // skillManager é global em Main.cpp — forward declaration evita include circular.
+    extern SkillManager skillManager;
+    aplicarEscolhaLevelUp(escolha,
+                          jogo.inventario,
+                          jogo.protagonista.upgrades,
+                          skillManager,
+                          jogo.protagonista);
 }
 
 // Aplica o upgrade escolhido ao estado do jogo e atualiza todos os atributos.
-// Cuida também da contagem para evolução do disparo.
 // Entrada: jogo (estado mutável), tipo (atributo a subir de nível)
 // Saída:   modifica jogo in-place; não retorna nada
-inline void aplicarUpgrade(EstadoDoJogo& jogo, TipoUpgrade tipo) {
-    SistemaUpgrades& upg = jogo.protagonista.upgrades;
+inline void aplicarEscolhaMenu(EstadoDoJogo& jogo, int indiceEscolha) {
+    if (indiceEscolha < 0 || indiceEscolha >= jogo.menuAtual.quantidade) return;
+    const LevelUpChoice& escolha = jogo.menuAtual.escolhas[indiceEscolha];
 
-    // Guarda o nível atual antes de incrementar
-    int nivelAnterior = upg.niveis[tipo];
+    extern SkillManager skillManager;
+    aplicarEscolhaLevelUp(escolha,
+                          jogo.inventario,
+                          jogo.protagonista.upgrades,
+                          skillManager,
+                          jogo.protagonista);
 
-    // Garante que não ultrapasse o máximo
-    if (nivelAnterior >= NIVEL_MAXIMO_UPGRADE)
-        return;
-
-    upg.niveis[tipo] = nivelAnterior + 1;
-    int novoNivel    = upg.niveis[tipo];
-
-    // --- Efeitos imediatos por tipo ---
-    switch (tipo) {
-        case DANO:
-            // O dano é calculado dinamicamente em instanciarProjetil(); nenhuma
-            // variável extra precisa ser atualizada aqui.
-            break;
-
-        case CADENCIA:
-            // O sistema de disparo atual é baseado em clique manual.
-            // O upgrade de cadência beneficia os TipoDisparo que aumentam
-            // velocidade/tamanho do projétil — sem cooldown automático a reduzir.
-            break;
-
-        case PERFURACAO:
-            // Perfuração é aplicada dinamicamente em instanciarProjetil().
-            break;
-
-        case TENSAO_UP:
-            // Atualiza cooldown do parry imediatamente
-            jogo.stand.cooldownParry = calcularCooldownParry(novoNivel);
-            // Se o parry estiver em cooldown e o novo valor for menor, ajusta
-            if (jogo.stand.temporizadorCooldown > jogo.stand.cooldownParry)
-                jogo.stand.temporizadorCooldown = jogo.stand.cooldownParry;
-            break;
-
-        case VELOCIDADE:
-            jogo.protagonista.velocidade = calcularVelocidadeJogador(novoNivel);
-            break;
-
-      case VIDA: {
-            int hpMaxAntigo = jogo.protagonista.hpMaximo;
-            int hpMaxNovo = calcularHPMaximo(novoNivel);
-            jogo.protagonista.hpMaximo = hpMaxNovo;
-            
-            // Adiciona ao HP atual a diferença adquirida no aumento do teto máximo
-            jogo.protagonista.hp += (hpMaxNovo - hpMaxAntigo);
-            
-            if (jogo.protagonista.hp > jogo.protagonista.hpMaximo)
-                jogo.protagonista.hp = jogo.protagonista.hpMaximo;
-            break;
-        }
-
-        default:
-            break;
-    }
-
-    // --- Controle da evolução de disparo ---
-    // Só registramos quando o atributo atingiu exatamente o nível 2
-    if (nivelAnterior == 1 && novoNivel == 2 && !jogo.disparoEvoluido) {
-        jogo.contagemAtributosNivel2++;
-
-        if (jogo.contagemAtributosNivel2 == 1) {
-            jogo.primeiroAtributoNivel2 = tipo;
-        } else if (jogo.contagemAtributosNivel2 == 2) {
-            jogo.segundoAtributoNivel2  = tipo;
-
-            // Evolução! Determina o tipo de disparo e trava para sempre.
-            jogo.stand.tipoDisparoAtual = determinarTipoDisparo(
-                jogo.primeiroAtributoNivel2,
-                jogo.segundoAtributoNivel2
-            );
-            jogo.disparoEvoluido = true;
-        }
-        // Se contagemAtributosNivel2 > 2, disparoEvoluido já é true → ignorado
+    // Limpa o estado do Tensao_UP se foi atualizado (parry cooldown)
+    if (escolha.tipo == ESCOLHA_ATRIBUTO_GLOBAL &&
+        escolha.referencia == (int)TENSAO_UP) {
+        jogo.stand.cooldownParry = calcularCooldownParry(
+            jogo.protagonista.upgrades.niveis[TENSAO_UP]);
+        if (jogo.stand.temporizadorCooldown > jogo.stand.cooldownParry)
+            jogo.stand.temporizadorCooldown = jogo.stand.cooldownParry;
     }
 }
-
 // ===========================================================================
 // SEÇÃO: MOVIMENTAÇÃO E ENTIDADES
 // ===========================================================================
@@ -710,84 +441,12 @@ inline void atualizarTimersStand(EstadoDoJogo& jogo, float deltaTime) {
 }
 
 // ===========================================================================
-// SEÇÃO: DISPARO
+// SEÇÃO: DISPARO (Lógica de instância migrada para o SkillManager)
 // ===========================================================================
 
-// Instancia múltiplos projéteis configurados para o TipoDisparo ativo.
-// Bloqueia completamente durante sobrecarga.
-inline void dispararProjetil(EstadoDoJogo& jogo, Vetor3D posicaoAlvo) {
-    if (jogo.stand.emSobrecarga) return;
-
-    int qtdTiros = calcularQuantidadeTiros(jogo.protagonista.upgrades.niveis[CADENCIA]);
-    Projetil baseTiro = instanciarProjetil(jogo, posicaoAlvo);
-
-    if (qtdTiros == 1) {
-        // Disparo Padrão (1 tiro reto)
-        jogo.tirosNaTela.push_back(baseTiro);
-    } 
-    else if (qtdTiros == 2) {
-        // Tiro Duplo (Formato em "V", separados por ~17 graus)
-        float angulos[2] = {-0.15f, 0.15f};
-        for (int i = 0; i < 2; i++) {
-            Projetil t = baseTiro;
-            float cosA = std::cos(angulos[i]);
-            float sinA = std::sin(angulos[i]);
-            t.direcao.x = baseTiro.direcao.x * cosA - baseTiro.direcao.z * sinA;
-            t.direcao.z = baseTiro.direcao.x * sinA + baseTiro.direcao.z * cosA;
-            jogo.tirosNaTela.push_back(t);
-        }
-    } 
-    else if (qtdTiros == 5) {
-        // Disparo em Cone (Espingarda)
-        float angulos[5] = {-0.30f, -0.15f, 0.0f, 0.15f, 0.30f};
-        for (int i = 0; i < 5; i++) {
-            Projetil t = baseTiro;
-            float cosA = std::cos(angulos[i]);
-            float sinA = std::sin(angulos[i]);
-            t.direcao.x = baseTiro.direcao.x * cosA - baseTiro.direcao.z * sinA;
-            t.direcao.z = baseTiro.direcao.x * sinA + baseTiro.direcao.z * cosA;
-            jogo.tirosNaTela.push_back(t);
-        }
-    } 
-    else if (qtdTiros >= 8) {
-        // Disparo Radial (Nova, 8 tiros divididos em ângulos de 45 graus)
-        const float PI_QUARTO = 0.785398f; // 45 graus em radianos
-        for (int i = 0; i < 8; i++) {
-            Projetil t = baseTiro;
-            float angulo = i * PI_QUARTO;
-            float cosA = std::cos(angulo);
-            float sinA = std::sin(angulo);
-            t.direcao.x = baseTiro.direcao.x * cosA - baseTiro.direcao.z * sinA;
-            t.direcao.z = baseTiro.direcao.x * sinA + baseTiro.direcao.z * cosA;
-            jogo.tirosNaTela.push_back(t);
-        }
-    }
-
-    // Tensão base por clique (O custo é por clique, não por projétil gerado)
-    jogo.stand.tensaoAtual += 5.0f;
-    if (jogo.stand.tensaoAtual > 100.0f) {
-        jogo.stand.tensaoAtual = 100.0f;
-    }
-}
-
-// Atualiza a trajetória dos projéteis e descarta os que saíram da arena
-inline void atualizarProjeteis(EstadoDoJogo& jogo, float deltaTime) {
-    const float LIMITE_ARENA = 150.0f;
-
-    for (size_t i = 0; i < jogo.tirosNaTela.size(); ++i) {
-        Projetil& tiro = jogo.tirosNaTela[i];
-        if (!tiro.ativo) continue;
-
-        tiro.posicao.x += tiro.direcao.x * tiro.velocidade * deltaTime;
-        tiro.posicao.z += tiro.direcao.z * tiro.velocidade * deltaTime;
-
-        if (tiro.posicao.x >  LIMITE_ARENA || tiro.posicao.x < -LIMITE_ARENA ||
-            tiro.posicao.z >  LIMITE_ARENA || tiro.posicao.z < -LIMITE_ARENA) {
-            tiro.ativo = false;
-        }
-    }
-}
-
+// (atualizarProjeteis REMOVIDO — o movimento dos projéteis agora é produzido
+//  pelo executor data-driven, MOV_LINEAR em SkillExecutor.h. A entidade ativa
+//  passou a ser RuntimeSkill, não mais Projetil/tirosNaTela.)
 // ===========================================================================
 // SEÇÃO: COLISÕES
 // ===========================================================================
@@ -809,6 +468,11 @@ inline bool jaAcertouEsteZumbi(const size_t* indicesJaAcertados, int quantidade,
 // Saída:   pode adicionar GemaXP a jogo.gemas
 inline void processarMorteZumbi(EstadoDoJogo& jogo, Zumbi& z) {
     z.vivo = false;
+
+    // Fase 3 — registra posição da última morte para efeitos futuros (hotspot, loot, etc.)
+    jogo.houveMorteRecente   = true;
+    jogo.ultimaPosicaoMorte  = z.posicao;
+
     if ((rand() % 100) < 70) {
         GemaXP gema;
         gema.posicao  = z.posicao;
@@ -1010,82 +674,9 @@ inline void obterCorBaseZumbi(TipoZumbi tipo, float& corR, float& corG, float& c
     }
 }
 
-// Cruza tiros com a horda, respeitando perfuração e evitando acertar o mesmo
-// zumbi duas vezes no mesmo frame com o mesmo projétil.
-// Comportamentos especiais por TipoDisparo:
-//   DISPARO_CADENCIA_VIDA  → 30% de chance de recuperar 1 HP ao acertar
-//   DISPARO_TENSAO_VIDA    → restaura 3 unidades de tensão ao acertar
-inline void processarColisoesTiros(EstadoDoJogo& jogo) {
-    const int MAX_ZUMBIS_POR_TIRO = 32; // Limite de segurança para o array local
+// (processarColisoesTiros legado REMOVIDO — colisao agora no motor
+//  data-driven via SkillManager::atualizarTodos.)
 
-    for (size_t i = 0; i < jogo.tirosNaTela.size(); ++i) {
-        Projetil& tiro = jogo.tirosNaTela[i];
-        if (!tiro.ativo) continue;
-
-        // Array local de índices de zumbis já acertados por ESTE tiro NESTE frame
-        size_t jaAcertados[MAX_ZUMBIS_POR_TIRO];
-        int    qtdAcertados = 0;
-
-        for (size_t j = 0; j < jogo.horda.size(); ++j) {
-            Zumbi& z = jogo.horda[j];
-            if (!z.vivo) continue;
-
-            // Não acertar o mesmo zumbi duas vezes
-            if (jaAcertouEsteZumbi(jaAcertados, qtdAcertados, j)) continue;
-
-            if (verificarColisao(tiro.posicao, tiro.raioColisao, z.posicao, z.raioColisao)) {
-                // Registra acerto para evitar colisão dupla
-                if (qtdAcertados < MAX_ZUMBIS_POR_TIRO)
-                    jaAcertados[qtdAcertados++] = j;
-
-                // Dano efetivo
-                int danoEfetivo = tiro.dano;
-                if (jogo.stand.emSobrecarga) {
-                    danoEfetivo = (int)(tiro.dano * FATOR_DANO_SOBRECARGA);
-                }
-
-                z.vida -= danoEfetivo;
-
-                // NOVO: cria o número de dano flutuante no ponto de impacto
-                criarFloatingDamage(jogo, z.posicao, danoEfetivo);
-
-                // Efeitos especiais por tipo de disparo
-                if (jogo.stand.tipoDisparoAtual == DISPARO_CADENCIA_VIDA) {
-                    // 30% de chance de recuperar 1 HP
-                    if ((rand() % 100) < 30) {
-                        if (jogo.protagonista.hp < jogo.protagonista.hpMaximo)
-                            jogo.protagonista.hp++;
-                    }
-                } else if (jogo.stand.tipoDisparoAtual == DISPARO_TENSAO_VIDA) {
-                    // Restaura 3 unidades de tensão ao acertar
-                    if (!jogo.stand.emSobrecarga) {
-                        jogo.stand.tensaoAtual -= 3.0f;
-                        if (jogo.stand.tensaoAtual < 0.0f) jogo.stand.tensaoAtual = 0.0f;
-                    }
-                }
-
-                // Morte do zumbi
-                if (z.vida <= 0) {
-                    // NOVO: explosão de partículas na cor do inimigo morto
-                    float corR, corG, corB;
-                    obterCorBaseZumbi(z.tipo, corR, corG, corB);
-                    criarParticulasMorte(jogo, z.posicao, corR, corG, corB);
-
-                    processarMorteZumbi(jogo, z);
-                }
-
-                // Controle de perfuração
-                if (tiro.perfuracaoRestante <= 0) {
-                    tiro.ativo = false;
-                    break; // Sem perfuração restante → para de verificar zumbis
-                } else {
-                    tiro.perfuracaoRestante--;
-                    // Continua ativo, verifica próximo zumbi
-                }
-            }
-        }
-    }
-}
 
 // Verifica colisão de cada zumbi vivo contra o jogador.
 inline void processarColisaoZumbiJogador(EstadoDoJogo& jogo, float deltaTime) {
@@ -1147,12 +738,14 @@ inline void processarLevelUp(EstadoDoJogo& jogo) {
     if (jogo.protagonista.xpAtual >= jogo.protagonista.xpParaProximoNivel) {
         jogo.protagonista.xpAtual -= jogo.protagonista.xpParaProximoNivel;
         jogo.protagonista.nivel   += 1;
-        jogo.protagonista.xpParaProximoNivel = calcularXpParaNivel(jogo.protagonista.nivel);
+        jogo.protagonista.xpParaProximoNivel =
+            calcularXpParaNivel(jogo.protagonista.nivel);
 
+        // Sorteia as 3 recompensas do novo sistema
         sortearUpgrades(jogo);
 
-        if (jogo.quantidadeOpcoes > 0) {
-            jogo.pausadoParaUpgrade = true;
+        if (jogo.menuAtual.quantidade > 0) {
+            jogo.pausadoParaUpgrade  = true;
             jogo.nivelAntesDaEscolha = jogo.protagonista.nivel;
         }
     }
@@ -1165,11 +758,8 @@ inline void limparEntidadesInativas(EstadoDoJogo& jogo) {
     }
     jogo.horda = hordaAtiva;
 
-    std::vector<Projetil> tirosAtivos;
-    for (size_t i = 0; i < jogo.tirosNaTela.size(); ++i) {
-        if (jogo.tirosNaTela[i].ativo) tirosAtivos.push_back(jogo.tirosNaTela[i]);
-    }
-    jogo.tirosNaTela = tirosAtivos;
+    // (compactação de tirosNaTela REMOVIDA — o pool de RuntimeSkill se compacta
+    //  sozinho via compactarPool() ao fim de processarColisoesSkills_Grade.)
 
     std::vector<GemaXP> gemasVisiveis;
     for (size_t i = 0; i < jogo.gemas.size(); ++i) {
@@ -1178,4 +768,4 @@ inline void limparEntidadesInativas(EstadoDoJogo& jogo) {
     jogo.gemas = gemasVisiveis;
 }
 
-#endif
+#endif // GAME_LOGIC_H
