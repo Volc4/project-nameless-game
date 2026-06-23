@@ -40,6 +40,8 @@
 #include "SkillExecutor.h"     // executarSkill, resolverEfeitos…
 #include "SkillManager.h"      // SkillManager + SpatialGrid.h (incluído internamente)
 #include "ProgressionSystem.h" // montarBuildCompleta, sortearRecompensas…
+#include "ArquetipoSystem.h"   // especialização irreversível da arma
+#include "ArmaInteligente.h"   // classe Arma Inteligente (exclusiva, 3 níveis)
 #include "SkillRender.h"       // desenharSkill, desenharTodasSkills
 
 // --- STL / CRT ---------------------------------------------------------------
@@ -140,7 +142,8 @@ void processarMorteZumbi(EstadoDoJogo& jogo, Zumbi& z) {
             (int)(jogo.protagonista.xpParaProximoNivel * 1.4f);
         jogo.protagonista.nivel++;
 
-        sortearRecompensas(jogo.menuAtual, jogo.inventario);
+        sortearRecompensas(jogo.menuAtual, jogo.inventario,
+                           jogo.arquetipoArma, jogo.protagonista.upgrades);
         jogo.pausadoParaUpgrade = true;
         jogo.jogoPausado        = true;
     }
@@ -315,7 +318,9 @@ void desenharArco3D(float cx, float y, float cz,
 
 static void inicializarEstadoJogo() {
     // --- Jogador ---
-    g_jogo.protagonista.posicao       = {0.0f, 0.0f, 0.0f};
+    g_jogo.protagonista.posicao.x = 0.0f;
+    g_jogo.protagonista.posicao.y = 0.0f;
+    g_jogo.protagonista.posicao.z = 0.0f;
     g_jogo.protagonista.velocidade    = 10.0f;
     g_jogo.protagonista.raioColisao   = 0.5f;
     g_jogo.protagonista.emDash        = false;
@@ -331,7 +336,9 @@ static void inicializarEstadoJogo() {
         g_jogo.protagonista.upgrades.niveis[i] = 0;
 
     // --- Stand ---
-    g_jogo.stand.posicao          = {1.5f, 0.0f, 0.0f};
+    g_jogo.stand.posicao.x = 1.5f;
+    g_jogo.stand.posicao.y = 0.0f;
+    g_jogo.stand.posicao.z = 0.0f;
     g_jogo.stand.anguloMira       = 0.0f;
     g_jogo.stand.tensaoAtual      = 0.0f;
     g_jogo.stand.emSobrecarga     = false;
@@ -358,7 +365,12 @@ static void inicializarEstadoJogo() {
     g_jogo.nivelAntesDaEscolha    = 1;
     g_jogo.jogoPausado            = false;
     g_jogo.houveMorteRecente      = false;
-    g_jogo.ultimaPosicaoMorte     = {0.0f, 0.0f, 0.0f};
+    g_jogo.ultimaPosicaoMorte.x = 0.0f;
+    g_jogo.ultimaPosicaoMorte.y = 0.0f;
+    g_jogo.ultimaPosicaoMorte.z = 0.0f;
+
+    // --- Sistema de Arquétipos: arma começa sem especialização ---
+    inicializarArquetipo(g_jogo.arquetipoArma);
 
     // --- Desbloqueios ---
     inicializarDesbloqueio(g_jogo.desbloqueios);
@@ -392,23 +404,23 @@ static Zumbi criarZumbi(TipoZumbi tipo) {
     int lado = rand() % 4;
     float pos = ((rand() % 2000) / 1000.0f - 1.0f) * ARENA_HALF;
     switch (lado) {
-        case 0: z.posicao = {-ARENA_HALF, 0.0f,  pos}; break;
-        case 1: z.posicao = { ARENA_HALF, 0.0f,  pos}; break;
-        case 2: z.posicao = {pos, 0.0f, -ARENA_HALF};  break;
-        default:z.posicao = {pos, 0.0f,  ARENA_HALF};  break;
+        case 0: z.posicao.x = -ARENA_HALF; z.posicao.y = 0.0f; z.posicao.z = pos; break;
+        case 1: z.posicao.x =  ARENA_HALF; z.posicao.y = 0.0f; z.posicao.z = pos; break;
+        case 2: z.posicao.x = pos; z.posicao.y = 0.0f; z.posicao.z = -ARENA_HALF; break;
+        default:z.posicao.x = pos; z.posicao.y = 0.0f; z.posicao.z =  ARENA_HALF; break;
     }
 
     switch (tipo) {
         case RAPIDO:
-            z.velocidade  = 12.0f; z.raioColisao = 0.4f; z.vida = 3;  break;
+            z.velocidade  = 5.0f; z.raioColisao = 0.4f; z.vida = 3;  break;
         case TANK:
-            z.velocidade  =  4.0f; z.raioColisao = 0.9f; z.vida = 20; break;
+            z.velocidade  =  0.8f; z.raioColisao = 0.9f; z.vida = 20; break;
         case ATIRADOR:
-            z.velocidade  =  5.0f; z.raioColisao = 0.5f; z.vida = 6;  break;
+            z.velocidade  =  2.0f; z.raioColisao = 0.5f; z.vida = 6;  break;
         case EXPLOSIVO:
-            z.velocidade  =  7.0f; z.raioColisao = 0.6f; z.vida = 5;  break;
+            z.velocidade  =  2.0f; z.raioColisao = 0.6f; z.vida = 5;  break;
         default:
-            z.velocidade  =  6.0f; z.raioColisao = 0.5f; z.vida = 5;  break;
+            z.velocidade  =  1.0f; z.raioColisao = 0.5f; z.vida = 5;  break;
     }
     return z;
 }
@@ -486,13 +498,19 @@ static void atualizarJogador(float dt) {
         }
     }
 
-    // Disparo contínuo por clique
-    if (g_cliqueMouse && !g_jogo.stand.emSobrecarga && !g_jogo.jogoPausado) {
+    // Disparo contínuo por clique com cooldown
+static float s_cooldownDisparo = 0.0f;
+s_cooldownDisparo -= dt;
+
+if (g_cliqueMouse && !g_jogo.stand.emSobrecarga && !g_jogo.jogoPausado) {
+    g_jogo.atirandoAgora = true;
+    if (s_cooldownDisparo <= 0.0f) {
         g_skills.executar(g_jogo, g_posicaoCursor);
-        g_jogo.atirandoAgora = true;
-    } else {
-        g_jogo.atirandoAgora = false;
+        s_cooldownDisparo = 0.3f;  // dispara a cada 0.3 segundos
     }
+} else {
+    g_jogo.atirandoAgora = false;
+}
 }
 
 // =============================================================================
@@ -1023,7 +1041,8 @@ static void cbKeyboard(unsigned char key, int /*x*/, int /*y*/) {
                                           g_jogo.inventario,
                                           g_jogo.protagonista.upgrades,
                                           g_skills,
-                                          g_jogo.protagonista);
+                                          g_jogo.protagonista,
+                                          g_jogo.arquetipoArma);
                     g_jogo.pausadoParaUpgrade = false;
                     g_jogo.jogoPausado        = false;
                 }
@@ -1070,7 +1089,8 @@ void aplicarEscolhaMenu(EstadoDoJogo& jogo, int indiceEscolha) {
                           jogo.inventario,
                           jogo.protagonista.upgrades,
                           g_skills,
-                          jogo.protagonista);
+                          jogo.protagonista,
+                          jogo.arquetipoArma);
     jogo.pausadoParaUpgrade = false;
     jogo.jogoPausado        = false;
 }
@@ -1090,6 +1110,7 @@ int main(int argc, char** argv) {
 
     // 2. Catálogo de skills
     registrarSkillsPadrao();
+    registrarArmasInteligentes();   // 3 armas inteligentes (builds por nível)
 
     // 3. Estado do jogo e build inicial
     inicializarEstadoJogo();

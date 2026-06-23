@@ -21,7 +21,19 @@ enum TipoUpgrade {
     TENSAO_UP  = 3,
     VELOCIDADE = 4,
     VIDA       = 5,
-    TOTAL_UPGRADES = 6
+    QUANTIDADE = 6,   // quantidade de balas (forma.quantidade) — base dos arquétipos
+    TOTAL_UPGRADES = 7
+};
+
+// Atributos QUE COMPÕEM A ARMA BASE "Disparo" (subconjunto de TipoUpgrade).
+// São os 4 que participam do sistema de Arquétipos (spec Fase de Evolução).
+// Mantidos como lista para o menu e a lógica de especialização.
+enum AtributoArma {
+    ATR_CADENCIA   = 0,
+    ATR_DANO       = 1,
+    ATR_PERFURACAO = 2,
+    ATR_QUANTIDADE = 3,
+    TOTAL_ATRIBUTOS_ARMA = 4
 };
 
 // (enum TipoDisparo REMOVIDO — sistema legado substituído pelo motor data-driven)
@@ -36,6 +48,35 @@ enum TipoUpgrade {
 // ---------------------------------------------------------------------------
 struct SistemaUpgrades {
     int niveis[TOTAL_UPGRADES];
+};
+
+// ===========================================================================
+//  SISTEMA DE ARQUÉTIPOS — especialização irreversível da arma base
+//
+//  Quando DOIS atributos diferentes da arma atingem o nível 2, o jogador
+//  desbloqueia um Arquétipo. A partir daí a build é permanentemente
+//  especializada: só esses dois atributos podem evoluir; os outros dois
+//  ficam bloqueados pelo resto da partida. Ao levar os dois a nível 3,
+//  a arma atinge sua Evolução Final.
+// ===========================================================================
+enum Arquetipo {
+    ARQ_NENHUM = 0,           // ainda não especializado
+    ARQ_METRALHADORA_PESADA,  // Cadência + Dano
+    ARQ_METRALHADORA_LEVE,    // Cadência + Quantidade
+    ARQ_CANHAO_ROTATIVO,      // Cadência + Perfuração
+    ARQ_RIFLE_LASER,          // Dano + Perfuração
+    ARQ_ESPINGARDA_TATICA,    // Dano + Quantidade
+    ARQ_CANHAO_FRAGMENTACAO,  // Perfuração + Quantidade
+    TOTAL_ARQUETIPOS
+};
+
+// Estado da especialização. Vive em EstadoDoJogo. POD, serializável.
+struct EstadoArquetipo {
+    Arquetipo arquetipo;       // ARQ_NENHUM enquanto não especializado
+    bool      especializado;   // true após travar os dois atributos
+    int       atributoA;       // AtributoArma principal 1 (-1 se nenhum)
+    int       atributoB;       // AtributoArma principal 2 (-1 se nenhum)
+    bool      evolucaoFinal;   // true quando ambos chegam a nível 3
 };
 
 // ---------------------------------------------------------------------------
@@ -258,6 +299,9 @@ struct EstadoDoJogo {
     // Hook para ORIG_KILLEDENEMY
     Vetor3D ultimaPosicaoMorte;
     bool houveMorteRecente;
+
+    // Sistema de Arquétipos — especialização irreversível da arma base.
+    EstadoArquetipo arquetipoArma;
 };
 
 #endif // ENTITIES_H

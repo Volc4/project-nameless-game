@@ -36,6 +36,8 @@
 #include "LevelUpChoice.h"
 #include "SkillManager.h"
 #include "SkillCatalog.h"
+#include "ArquetipoSystem.h"
+#include "ArmaInteligente.h"
 #include "Entities.h"
 #include <cstdlib>   // rand
 #include <cstdio>    // snprintf
@@ -185,19 +187,33 @@ inline void montarBuildCompleta(const InventarioSkills& inv,
         int idSkill = inv.equipadas[slot];
         if (idSkill < 0) continue;
 
-        // 1. Obtém o modelo base da factory
-        SkillData build = SkillFactory::criar(idSkill);
-        if (!build.ativa) {
-            // Fallback: se a skill não existir na factory, usa o disparo base
-            build = buildBase();
+        // 1. Obtém o modelo base da skill.
+        //    Armas Inteligentes têm BUILD EXPLÍCITA por nível (não escala
+        //    genérica): cada nível muda comportamento conforme o spec.
+        SkillData build;
+        int armaInt = armaInteligenteDeId(idSkill);
+        bool ehArmaInt = (armaInt >= 0);
+
+        if (ehArmaInt) {
+            int nv = inv.nivelSkill[idSkill];
+            if (nv < 1) nv = 1;                       // equipada = nível 1
+            if (nv > NIVEL_MAX_ARMA_INTELIGENTE) nv = NIVEL_MAX_ARMA_INTELIGENTE;
+            build = buildArmaInteligente(armaInt, nv);
+        } else {
+            build = SkillFactory::criar(idSkill);
+            if (!build.ativa) build = buildBase();    // fallback seguro
         }
 
         // 2. Aplica upgrades clássicos de atributo (DANO, CADENCIA, etc.)
         //    sobre a base desta skill específica
         build = aplicarUpgradesNaSkill(build, upgrades, d);
 
-        // 3. Aplica o nível de evolução desta skill
-        build = aplicarNivelSkill(build, inv.nivelSkill[idSkill]);
+        // 3. Nível de evolução:
+        //    - Armas Inteligentes JÁ trazem o comportamento do nível na build
+        //      explícita (passo 1), então NÃO recebem a escala genérica.
+        //    - Demais skills usam a escala genérica por nível.
+        if (!ehArmaInt)
+            build = aplicarNivelSkill(build, inv.nivelSkill[idSkill]);
 
         // 4. Aplica atributos globais do inventário
         build = aplicarAtributosGlobaisNaSkill(build, inv.atributosGlobais);
@@ -223,7 +239,8 @@ static const char* NOME_ATRIB[TOTAL_UPGRADES] = {
     "+Perfuracao",
     "+Eficiencia",
     "+Velocidade",
-    "+Vida"
+    "+Vida",
+    "+Balas"
 };
 
 static const char* DESC_ATRIB[TOTAL_UPGRADES] = {
@@ -232,7 +249,8 @@ static const char* DESC_ATRIB[TOTAL_UPGRADES] = {
     "+1 perfuracao em todos os ataques",
     "-10% custo de tensao por disparo",
     "+20% velocidade de movimento",
-    "+15% HP maximo e +1 HP"
+    "+15% HP maximo e +1 HP",
+    "+1 projetil por disparo"
 };
 
 static const EscolhaRaridade RARIDADE_ATRIB[TOTAL_UPGRADES] = {
@@ -241,7 +259,8 @@ static const EscolhaRaridade RARIDADE_ATRIB[TOTAL_UPGRADES] = {
     RARIDADE_RARA,
     RARIDADE_INCOMUM,
     RARIDADE_COMUM,
-    RARIDADE_RARA
+    RARIDADE_RARA,
+    RARIDADE_INCOMUM
 };
 
 static bool _jaSorteado(const MenuLevelUp& menu, EscolhaTipo tipo, int ref) {
@@ -258,11 +277,16 @@ static bool _tentarNovaSkill(MenuLevelUp& menu, const InventarioSkills& inv) {
 
     int candidatos[MAX_SKILLS_CATALOGO];
     int nCand = 0;
+    int armaIntAtual = armaInteligenteEquipada(inv);   // -1 se nenhuma
     for (int i = 0; i < total && i < MAX_SKILLS_CATALOGO; ++i) {
-        if (!estaEquipada(inv, i) &&
-            !_jaSorteado(menu, ESCOLHA_NOVA_SKILL, i)) {
-            candidatos[nCand++] = i;
-        }
+        if (estaEquipada(inv, i)) continue;
+        if (_jaSorteado(menu, ESCOLHA_NOVA_SKILL, i)) continue;
+
+        // Exclusividade: se já há uma arma inteligente equipada, não oferece
+        // outra arma inteligente (apenas uma por partida).
+        if (armaIntAtual >= 0 && ehArmaInteligente(i)) continue;
+
+        candidatos[nCand++] = i;
     }
     if (nCand == 0) return false;
 
@@ -285,10 +309,17 @@ static bool _tentarUpgradeSkill(MenuLevelUp& menu, const InventarioSkills& inv) 
     int nCand = 0;
     for (int i = 0; i < inv.numEquipadas; ++i) {
         int id = inv.equipadas[i];
-        if (id >= 0 && podeEvolir(inv, id) &&
-            !_jaSorteado(menu, ESCOLHA_UPGRADE_SKILL, id)) {
-            candidatos[nCand++] = id;
+        if (id < 0) continue;
+        if (_jaSorteado(menu, ESCOLHA_UPGRADE_SKILL, id)) continue;
+
+        // Arma Inteligente: teto de nível 3 (spec). Ao atingi-lo, não aparece
+        // mais como opção de evolução.
+        if (ehArmaInteligente(id)) {
+            if (armaInteligenteNoMaximo(inv, id)) continue;
+        } else {
+            if (!podeEvolir(inv, id)) continue;
         }
+        candidatos[nCand++] = id;
     }
     if (nCand == 0) return false;
 
@@ -310,12 +341,21 @@ static bool _tentarUpgradeSkill(MenuLevelUp& menu, const InventarioSkills& inv) 
     return true;
 }
 
-static bool _tentarAtributoGlobal(MenuLevelUp& menu) {
+static bool _tentarAtributoGlobal(MenuLevelUp& menu,
+                                  const EstadoArquetipo& arq,
+                                  const SistemaUpgrades& up) {
     int candidatos[TOTAL_UPGRADES];
     int nCand = 0;
     for (int t = 0; t < TOTAL_UPGRADES; ++t) {
-        if (!_jaSorteado(menu, ESCOLHA_ATRIBUTO_GLOBAL, t))
-            candidatos[nCand++] = t;
+        if (_jaSorteado(menu, ESCOLHA_ATRIBUTO_GLOBAL, t)) continue;
+
+        // Filtro de Arquétipo: se é atributo de arma, respeita bloqueio e teto.
+        int atr = upgradeParaAtributo((TipoUpgrade)t);
+        if (atr >= 0) {
+            if (atributoBloqueado(arq, atr)) continue;       // travado pela especialização
+            if (up.niveis[t] >= 3)           continue;       // já no nível máximo
+        }
+        candidatos[nCand++] = t;
     }
     if (nCand == 0) return false;
 
@@ -332,24 +372,35 @@ static bool _tentarAtributoGlobal(MenuLevelUp& menu) {
     return true;
 }
 
-inline void sortearRecompensas(MenuLevelUp& menu, const InventarioSkills& inv) {
+inline void sortearRecompensas(MenuLevelUp& menu, const InventarioSkills& inv,
+                               const EstadoArquetipo& arq,
+                               const SistemaUpgrades& up) {
     limparMenu(menu);
 
     if (!_tentarNovaSkill(menu, inv))
         if (!_tentarUpgradeSkill(menu, inv))
-            _tentarAtributoGlobal(menu);
+            _tentarAtributoGlobal(menu, arq, up);
 
     if (menu.quantidade < MAX_ESCOLHAS_MENU) {
         if (!_tentarUpgradeSkill(menu, inv))
             if (!_tentarNovaSkill(menu, inv))
-                _tentarAtributoGlobal(menu);
+                _tentarAtributoGlobal(menu, arq, up);
     }
 
     if (menu.quantidade < MAX_ESCOLHAS_MENU) {
-        if (!_tentarAtributoGlobal(menu))
+        if (!_tentarAtributoGlobal(menu, arq, up))
             if (!_tentarNovaSkill(menu, inv))
                 _tentarUpgradeSkill(menu, inv);
     }
+}
+
+// Overload de compatibilidade: sem estado de arquétipo (nada bloqueado).
+// Mantém call sites antigos funcionando. Cria estado neutro local.
+inline void sortearRecompensas(MenuLevelUp& menu, const InventarioSkills& inv) {
+    EstadoArquetipo neutro; inicializarArquetipo(neutro);
+    SistemaUpgrades zero;
+    for (int i = 0; i < TOTAL_UPGRADES; ++i) zero.niveis[i] = 0;
+    sortearRecompensas(menu, inv, neutro, zero);
 }
 
 // ===========================================================================
@@ -363,10 +414,16 @@ inline void aplicarEscolhaLevelUp(const LevelUpChoice& escolha,
                                   InventarioSkills& inv,
                                   SistemaUpgrades& upgrades,
                                   SkillManager& skills,
-                                  Jogador& jogador) {
+                                  Jogador& jogador,
+                                  EstadoArquetipo& arq) {
     switch (escolha.tipo) {
         case ESCOLHA_NOVA_SKILL: {
             int id = escolha.referencia;
+            // Exclusividade de Arma Inteligente: se o jogador tenta equipar uma
+            // arma inteligente e já há outra equipada, recusa (defesa extra
+            // além do filtro do menu).
+            if (ehArmaInteligente(id) && !podeEquiparArmaInteligente(inv, id))
+                break;
             desbloquearSkill(inv, id);
             equiparSkill(inv, id);
             break;
@@ -378,6 +435,11 @@ inline void aplicarEscolhaLevelUp(const LevelUpChoice& escolha,
         }
         case ESCOLHA_ATRIBUTO_GLOBAL: {
             TipoUpgrade tipo = (TipoUpgrade)escolha.referencia;
+
+            // Arquétipo: nunca aplica um atributo de arma bloqueado pela
+            // especialização (defesa extra além do filtro do menu).
+            if (upgradeBloqueado(arq, tipo))
+                break;
 
             aplicarAtributoGlobal(inv, tipo, 1);
 
@@ -398,12 +460,25 @@ inline void aplicarEscolhaLevelUp(const LevelUpChoice& escolha,
                 jogador.velocidade = vels[nv];
                 jogador.velocidade *= inv.atributosGlobais.bonusVelocidade;
             }
+
+            // Após evoluir um atributo de arma, verifica especialização/evolução.
+            verificarEspecializacao(arq, upgrades);
             break;
         }
     }
 
     // Remonta a build completa com TODOS os slots (inclui verificarSinergias)
     montarBuildCompleta(inv, upgrades, skills);
+}
+
+// Overload de compatibilidade (sem estado de arquétipo).
+inline void aplicarEscolhaLevelUp(const LevelUpChoice& escolha,
+                                  InventarioSkills& inv,
+                                  SistemaUpgrades& upgrades,
+                                  SkillManager& skills,
+                                  Jogador& jogador) {
+    EstadoArquetipo descartavel; inicializarArquetipo(descartavel);
+    aplicarEscolhaLevelUp(escolha, inv, upgrades, skills, jogador, descartavel);
 }
 
 #endif // PROGRESSION_SYSTEM_H

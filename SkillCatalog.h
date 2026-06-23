@@ -86,6 +86,17 @@ inline SkillData aplicarUpgradesNaSkill(SkillData s,
         s.forma.perfuracao += nivelPerf;
     }
 
+    // QUANTIDADE: +1 projétil por nível (quantidade de balas do disparo).
+    //   Afeta forma.quantidade — o spawner gera N sub-projéteis em leque.
+    int nivelQtd = upgrades.niveis[QUANTIDADE];
+    if (nivelQtd > 0) {
+        if (s.forma.quantidade < 1) s.forma.quantidade = 1;
+        s.forma.quantidade += nivelQtd;
+        // garante um spread mínimo para o leque ser visível quando >1
+        if (s.forma.quantidade > 1 && s.forma.spreadAngulo < 0.05f)
+            s.forma.spreadAngulo = 0.12f;
+    }
+
     // TENSAO_UP: −10% custo tensão por nível
     int nivelTensao = upgrades.niveis[TENSAO_UP];
     if (nivelTensao > 0) {

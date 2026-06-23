@@ -252,6 +252,9 @@ private:
             if (slots[i].ativo) numSlotsAtivos++;
     }
 
+    void _empurrarInstancia(SlotSkill& sl, EstadoDoJogo& jogo, const SkillData& s,
+                            Vetor3D origem, Vetor3D dir);
+
     // -----------------------------------------------------------------------
     // _spawnarInstancias — cria 1..N RuntimeSkill no pool do slot.
     //   Idêntico ao spawnarInstancias() anterior, mas opera sobre o SlotSkill
@@ -268,7 +271,7 @@ private:
             n = (s.forma.quantidade > 0 ? s.forma.quantidade : 1);
 
         if (n == 1) {
-            _empurrarInstancia(sl, s, origem, dirBase);
+            _empurrarInstancia(sl, jogo, s, origem, dirBase);
             return;
         }
 
@@ -278,7 +281,7 @@ private:
             float dx = dirBase.x, dz = dirBase.z;
             _rotacionarXZ(dx, dz, inicio + i * s.forma.spreadAngulo);
             Vetor3D dir = {dx, 0.0f, dz};
-            _empurrarInstancia(sl, s, origem, dir);
+            _empurrarInstancia(sl, jogo, s, origem, dir);
         }
     }
 
@@ -319,23 +322,6 @@ private:
     // _empurrarInstancia — cria um RuntimeSkill e insere no pool do slot.
     //   Centraliza a inicialização de campos comuns a qualquer forma.
     // -----------------------------------------------------------------------
-    void _empurrarInstancia(SlotSkill& sl, const SkillData& s,
-                            Vetor3D origem, Vetor3D dir) {
-        RuntimeSkill r;
-        zerarRuntime(r);
-        r.idSkillData        = s.id;
-        r.ativo              = true;
-        r.posicao            = origem;
-        r.direcao            = dir;
-        r.centro             = origem;
-        r.alvo               = origem;    // atualizado pelo executor se Homing
-        r.idAlvo             = -1;
-        r.tempoVida          = (s.forma.duracao > 0.0f) ? s.forma.duracao : 0.0f;
-        r.dano               = (s.numEfeitos > 0) ? s.efeitos[0].valor : 1;
-        r.raioColisao        = s.forma.raioColisao;
-        r.perfuracaoRestante = s.forma.perfuracao;
-        adicionarAoPool(sl.pool, r);
-    }
 
     // cópia desabilitada
     SkillManager(const SkillManager&);
@@ -346,6 +332,44 @@ private:
 //  SEÇÃO FINAL — definições que precisam de GradeEspacial completo.
 // ===========================================================================
 #include "SpatialGrid.h"
+
+// _acharZumbiMaisProximo — função livre, visível para _empurrarInstancia
+//   e _atualizarEmitter.
+inline int _acharZumbiMaisProximo(EstadoDoJogo& jogo, Vetor3D de) {
+    int melhor = -1;
+    float melhorDist = 1e30f;
+    for (int i = 0; i < (int)jogo.horda.size(); ++i) {
+        if (!jogo.horda[i].vivo) continue;
+        float dx = jogo.horda[i].posicao.x - de.x;
+        float dz = jogo.horda[i].posicao.z - de.z;
+        float d2 = dx * dx + dz * dz;
+        if (d2 < melhorDist) { melhorDist = d2; melhor = i; }
+    }
+    return melhor;
+}
+
+inline void SkillManager::_empurrarInstancia(SlotSkill& sl, EstadoDoJogo& jogo,
+                                             const SkillData& s,
+                                             Vetor3D origem, Vetor3D dir) {
+    RuntimeSkill r;
+    zerarRuntime(r);
+    r.idSkillData        = s.id;
+    r.ativo              = true;
+    r.posicao            = origem;
+    r.direcao            = dir;
+    r.centro             = origem;
+    r.alvo               = origem;
+    r.idAlvo             = -1;
+    r.tempoVida          = (s.forma.duracao > 0.0f) ? s.forma.duracao : 0.0f;
+    r.dano               = (s.numEfeitos > 0) ? s.efeitos[0].valor : 1;
+    r.raioColisao        = s.forma.raioColisao;
+    r.perfuracaoRestante = s.forma.perfuracao;
+
+    if (s.movimento.tipo == MOV_HOMING)
+        r.idAlvo = _acharZumbiMaisProximo(jogo, origem);
+
+    adicionarAoPool(sl.pool, r);
+}
 
 // Adaptador do contrato do executor para a API real da grade.
 inline void obterVizinhosHost(GradeEspacial& grade, float x, float z,
@@ -441,12 +465,16 @@ inline void _atualizarEmitter(SlotSkill& sl, EstadoDoJogo& jogo,
     if (sl.cooldownRestante <= 0.0f) {
         sl.cooldownRestante = (s.cooldown > 0.0f) ? s.cooldown : 1.0f;
 
-        // Alvo: para skills automáticas sem cursor, usa posição do jogador como
+        // Alvo: para skills automáticas, mira no zumbi vivo mais próximo do
+        // Stand (disparo inteligente). Se não há inimigos, usa o jogador como
         // referência direcional (comportamento seguro e genérico).
-        Vetor3D alvo = jogo.protagonista.posicao;
-        // Ajuste para RANDOMMAP: a skill resolverá a origem no executor.
-        // Aqui apenas spawna com origem no stand.
         Vetor3D origem = jogo.stand.posicao;
+        int idAlvoProx = _acharZumbiMaisProximo(jogo, origem);
+        Vetor3D alvo;
+        if (idAlvoProx >= 0)
+            alvo = jogo.horda[idAlvoProx].posicao;
+        else
+            alvo = jogo.protagonista.posicao;
 
         int n = 1;
         if (s.forma.tipo == FORMA_CONE || s.forma.tipo == FORMA_RING)
@@ -469,6 +497,10 @@ inline void _atualizarEmitter(SlotSkill& sl, EstadoDoJogo& jogo,
             r.centro             = origem;
             r.alvo               = alvo;
             r.idAlvo             = -1;
+            // Disparo inteligente automático: skills homing perseguem o zumbi
+            // mais próximo identificado acima.
+            if (s.movimento.tipo == MOV_HOMING)
+                r.idAlvo = idAlvoProx;
             r.tempoVida          = (s.forma.duracao > 0.0f) ? s.forma.duracao : 0.0f;
             r.dano               = (s.numEfeitos > 0) ? s.efeitos[0].valor : 1;
             r.raioColisao        = s.forma.raioColisao;

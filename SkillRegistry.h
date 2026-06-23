@@ -134,7 +134,9 @@ inline SkillData buildCadeiaEletrica() {
 // ---------------------------------------------------------------------------
 inline void registrarSkillsPadrao() {
     RegistrarSkill("Disparo",            buildDisparo());
-    RegistrarSkill("MissilVampirico",    buildMissilVampirico());
+    // (As Armas Inteligentes — MissilVampirico, MissilGuiado, EspiritoCacador —
+    //  são registradas por registrarArmasInteligentes() em ArmaInteligente.h,
+    //  com builds explícitas por nível. Chamado em seguida no bootstrap.)
     RegistrarSkill("PilarFogo",          buildPilarFogo());
     RegistrarSkill("TempestadeOrbital",  buildTempestadeOrbital());
     RegistrarSkill("LancaDeLuz",         buildLancaDeLuz());

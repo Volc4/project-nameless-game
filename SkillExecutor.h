@@ -144,9 +144,26 @@ inline void movBoomerang(const SkillData& s, RuntimeSkill& r, float dt) {
 
 inline void movHoming(const SkillData& s, RuntimeSkill& r,
                       EstadoDoJogo& jogo, float dt) {
-    // Vira a direção em direção ao alvo (idAlvo). Se alvo morreu, segue reto.
-    if (r.idAlvo >= 0 && r.idAlvo < (int)jogo.horda.size() &&
-        jogo.horda[r.idAlvo].vivo) {
+    // Disparo inteligente: persegue o alvo (idAlvo). Se o alvo morreu ou é
+    // inválido, RE-ADQUIRE o zumbi vivo mais próximo (o míssil nunca fica
+    // voando reto à toa enquanto houver inimigos).
+    bool alvoValido = (r.idAlvo >= 0 && r.idAlvo < (int)jogo.horda.size() &&
+                       jogo.horda[r.idAlvo].vivo);
+    if (!alvoValido) {
+        int melhor = -1;
+        float melhorDist = 1e30f;
+        for (int i = 0; i < (int)jogo.horda.size(); ++i) {
+            if (!jogo.horda[i].vivo) continue;
+            float dx = jogo.horda[i].posicao.x - r.posicao.x;
+            float dz = jogo.horda[i].posicao.z - r.posicao.z;
+            float d2 = dx * dx + dz * dz;
+            if (d2 < melhorDist) { melhorDist = d2; melhor = i; }
+        }
+        r.idAlvo = melhor;
+        alvoValido = (melhor >= 0);
+    }
+
+    if (alvoValido) {
         Vetor3D desejada = obterDirecaoNormalizada(r.posicao,
                                                    jogo.horda[r.idAlvo].posicao);
         float t = s.movimento.taxaCorrecao * dt;
