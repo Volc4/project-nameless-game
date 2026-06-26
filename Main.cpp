@@ -502,8 +502,11 @@ static void atualizarJogador(float dt) {
     g_jogo.stand.anguloMira = std::atan2(dirMira.z, dirMira.x);
 
 // --- Controle de Sobrecarga e Resfriamento de Tensão ---
+   int nivelEficiencia = g_jogo.protagonista.upgrades.niveis[TENSAO_UP];
+    float multiplicador = 1.0f + 0.30f * (float)nivelEficiencia;
+
     if (g_jogo.stand.emSobrecarga) {
-        g_jogo.stand.tensaoAtual -= 20.0f * dt; 
+        g_jogo.stand.tensaoAtual -= (20.0f * multiplicador) * dt; 
         if (g_jogo.stand.tensaoAtual <= 0.0f) {
             g_jogo.stand.tensaoAtual  = 0.0f;
             g_jogo.stand.emSobrecarga = false;
@@ -515,7 +518,7 @@ static void atualizarJogador(float dt) {
         } 
         else if (!g_cliqueMouse) {
             // Esvazia a barra continuamente quando o botão não está pressionado
-            g_jogo.stand.tensaoAtual -= 15.0f * dt; 
+            g_jogo.stand.tensaoAtual -= (15.0f * multiplicador) * dt; 
             if (g_jogo.stand.tensaoAtual < 0.0f) {
                 g_jogo.stand.tensaoAtual = 0.0f;
             }
@@ -528,7 +531,7 @@ static void atualizarJogador(float dt) {
         s_cooldownDisparo -= dt;
     }
 
-if (g_cliqueMouse && !g_jogo.stand.emSobrecarga && !g_jogo.jogoPausado) {
+    if (g_cliqueMouse && !g_jogo.stand.emSobrecarga && !g_jogo.jogoPausado) {
         g_jogo.atirandoAgora = true;
         if (s_cooldownDisparo <= 0.0f) {
             g_skills.executar(g_jogo, g_posicaoCursor);
@@ -541,6 +544,9 @@ if (g_cliqueMouse && !g_jogo.stand.emSobrecarga && !g_jogo.jogoPausado) {
             
             s_cooldownDisparo = baseCooldown * fator;  
         }
+    } else {
+        // A flag atirandoAgora só deve ser falsa quando o jogador não estiver clicando
+        // ou estiver em sobrecarga/pausa.
         g_jogo.atirandoAgora = false;
     }
 }
