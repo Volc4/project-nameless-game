@@ -68,18 +68,20 @@ inline void desenharSkill(const SkillData& s, const RuntimeSkill& r) {
         case FORMA_CONE:
         case FORMA_RING:
         case FORMA_PRISM: {
-            // Cada instância (sub-projétil) é um pequeno bloco — paridade com
-            // o antigo desenharProjeteis.
-            const float L = 0.20f, ALT = 0.20f;
-            desenharBloco3D(r.posicao.x, BASE_Y, r.posicao.z,
-                            L, L, ALT,
-                            1.0f, 1.0f, 0.20f,
-                            0.80f, 0.80f, 0.0f,
-                            0.55f, 0.55f, 0.0f,
-                            0.90f, 0.90f, 0.05f,
-                            0.65f, 0.65f, 0.0f);
-            break;
-        }
+                // Como o raio base é 0.25, multiplicá-lo por 0.8 faz com que o tamanho 
+                // visual inicie exatamente no seu tamanho clássico de 0.20f.
+                // Quando o dano subir, o raioColisao sobe, e o tamanhoDaBala cresce junto!
+                float tamanhoDaBala = r.raioColisao * 0.8f; 
+                
+                desenharBloco3D(r.posicao.x, BASE_Y, r.posicao.z,
+                                tamanhoDaBala, tamanhoDaBala, tamanhoDaBala,
+                                1.0f, 1.0f, 0.20f,
+                                0.80f, 0.80f, 0.0f,
+                                0.55f, 0.55f, 0.0f,
+                                0.90f, 0.90f, 0.05f,
+                                0.65f, 0.65f, 0.0f);
+                break;
+            }
         case FORMA_BEAM:
         case FORMA_WALL: {
             // Linha da posição na direção, comprimento da forma.

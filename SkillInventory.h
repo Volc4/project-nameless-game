@@ -164,7 +164,7 @@ inline void aplicarAtributoGlobal(InventarioSkills& inv,
     AtributosGlobais& a = inv.atributosGlobais;
     switch (tipo) {
         case DANO:
-            a.bonusDano += 0.10f;          // +10% dano
+            // +10% dano
             break;
         case CADENCIA:
             // Processado diretamente via escala de cooldown em aplicarUpgradesNaSkill e Main.cpp

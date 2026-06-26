@@ -226,14 +226,15 @@ inline void inicializarRuntime(RuntimeSkill& r,
     r.alvo        = alvo;
     r.idAlvo      = -1;
     r.geracao     = geracaoInicial;
-
-    // Tempo de vida: usa duracao da forma para formas continuas,
-    // senao um valor alto (projeteis expiram ao sair da arena)
-    if (s.forma.duracao > 0.0f)
+// Tempo de vida: usa duracao da forma para formas continuas.
+    // Senao, calcula o tempo de voo exato baseado no alcanceMax e velocidade.
+    if (s.forma.duracao > 0.0f) {
         r.tempoVida = s.forma.duracao;
-    else
-        r.tempoVida = 30.0f; // 30s: limite de seguranca para projeteis
-
+    } else if (s.movimento.velocidade > 0.001f && s.forma.alcanceMax > 0.0f) {
+        r.tempoVida = s.forma.alcanceMax / s.movimento.velocidade;
+    } else {
+        r.tempoVida = 30.0f; // fallback de seguranca
+    }
     // --- Direcao base (origem -> alvo, plano XZ) ---
     float dx = alvo.x - origemPos.x;
     float dz = alvo.z - origemPos.z;

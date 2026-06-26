@@ -401,7 +401,7 @@ inline void executarSkill(const SkillData& s, RuntimeSkill& r,
     }
 
     // 3. tempo de vida e limite de arena (projéteis que escapam morrem).
-    if (s.forma.duracao > 0.0f) {
+    if (r.tempoVida > 0.0f) {
         r.tempoVida -= dt;
         if (r.tempoVida <= 0.0f) r.ativo = false;
     }

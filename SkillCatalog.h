@@ -59,14 +59,20 @@ inline void liberarPorUpgrade(EstadoDesbloqueio& d,
 inline SkillData aplicarUpgradesNaSkill(SkillData s,
                                          const SistemaUpgrades& upgrades,
                                          const EstadoDesbloqueio& /*d*/) {
-    // DANO: +10% por nível
+    // DANO: Aumenta o dano base e o tamanho do projétil (raio de colisão)
     int nivelDano = upgrades.niveis[DANO];
     if (nivelDano > 0) {
-        float fator = 1.0f + 0.10f * nivelDano;
+        // Exemplo: +30% de dano por nível para ser mais impactante
+        float fatorDano = 1.0f + 0.10f * (float)nivelDano;
+        
+        // Aumenta o tamanho (hitbox visual) em +20% por nível (recupera a ideia original)
+        float fatorTamanho = 1.0f + 0.20f * (float)nivelDano;
+        s.forma.raioColisao *= fatorTamanho;
+
         for (int i = 0; i < s.numEfeitos; ++i) {
             if (s.efeitos[i].tipo == EFE_DAMAGE ||
                 s.efeitos[i].tipo == EFE_SHOCK) {
-                s.efeitos[i].valor = (int)(s.efeitos[i].valor * fator + 0.5f);
+                s.efeitos[i].valor = (int)((float)s.efeitos[i].valor * fatorDano + 0.5f);
             }
         }
     }
@@ -95,10 +101,11 @@ inline SkillData aplicarUpgradesNaSkill(SkillData s,
         }
     }
 
-    // PERFURACAO: +1 por nível
+   // PERFURACAO: +2 perfuração e +10 alcance máximo por nível
     int nivelPerf = upgrades.niveis[PERFURACAO];
     if (nivelPerf > 0) {
-        s.forma.perfuracao += nivelPerf;
+        s.forma.perfuracao += 2 * nivelPerf;
+        s.forma.alcanceMax += 10.0f * (float)nivelPerf;
     }
 
     // QUANTIDADE: +1 projétil por nível (quantidade de balas do disparo).

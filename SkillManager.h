@@ -563,8 +563,13 @@ inline void _processarColisoesSlot(SlotSkill& sl, EstadoDoJogo& jogo,
                 if (s.forma.tipo == FORMA_PROJECTILE ||
                     s.forma.tipo == FORMA_CONE ||
                     s.forma.tipo == FORMA_PRISM) {
-                    if (r.perfuracaoRestante <= 0) { r.ativo = false; break; }
-                    else                            { r.perfuracaoRestante--;   }
+                    
+                    if (r.perfuracaoRestante <= 0) { 
+                        r.ativo = false; 
+                        break; // <--- ESTE BREAK É OBRIGATÓRIO! Ele impede que a bala acerte zumbis sobrepostos no mesmo frame.
+                    } else { 
+                        r.perfuracaoRestante--;   
+                    }
                 }
             }
         }

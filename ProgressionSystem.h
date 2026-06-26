@@ -82,8 +82,20 @@ inline SkillData aplicarAtributosGlobaisNaSkill(SkillData s,
     if (a.bonusPerfuracao > 0.0f)
         s.forma.perfuracao += (int)a.bonusPerfuracao;
 
+    // NOVO: duração do projétil escala com perfuração total acumulada.
+    // perfuracao 0 → 1.0s, cada ponto extra soma 0.5s (cap em 4.0s).
+    if (s.forma.tipo == FORMA_PROJECTILE ||
+        s.forma.tipo == FORMA_CONE       ||
+        s.forma.tipo == FORMA_PRISM) {
+        float duracao = 1.0f + s.forma.perfuracao * 0.5f;
+        if (duracao > 4.0f) duracao = 4.0f;
+        s.forma.duracao = duracao;
+    }
+
     return s;
 }
+
+
 
 // ===========================================================================
 //  PARTE C — NÍVEL DE EVOLUÇÃO DA SKILL
@@ -106,6 +118,14 @@ inline SkillData aplicarNivelSkill(SkillData s, int nivel) {
     s.movimento.velocidade *= fatorVel;
     s.forma.perfuracao     += nivel;
 
+    // NOVO: mesma lógica de duração — aplicada após o += nivel acima.
+    if (s.forma.tipo == FORMA_PROJECTILE ||
+        s.forma.tipo == FORMA_CONE       ||
+        s.forma.tipo == FORMA_PRISM) {
+        float duracao = 1.0f + s.forma.perfuracao * 0.5f;
+        if (duracao > 4.0f) duracao = 4.0f;
+        s.forma.duracao = duracao;
+    }
     if (nivel >= 3) {
         s.custoTensao *= 0.80f;
         if (s.custoTensao < 1.0f) s.custoTensao = 1.0f;
@@ -244,9 +264,9 @@ static const char* NOME_ATRIB[TOTAL_UPGRADES] = {
 };
 
 static const char* DESC_ATRIB[TOTAL_UPGRADES] = {
-    "+10% de dano em todos os ataques",
+    "+10% de dano e +20% de tamanho da bala",
     "+20% Vel. de disparo e -10% custo de tensao, mas -10% de dano base",
-    "+1 perfuracao em todos os ataques",
+    "+2 perfuracao e +10 de alcance maximo",
     "-10% custo de tensao por disparo",
     "+20% velocidade de movimento",
     "+15% HP maximo e +1 HP",
