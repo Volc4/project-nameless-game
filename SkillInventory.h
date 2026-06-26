@@ -167,8 +167,7 @@ inline void aplicarAtributoGlobal(InventarioSkills& inv,
             a.bonusDano += 0.10f;          // +10% dano
             break;
         case CADENCIA:
-            a.bonusTensao -= 0.05f;        // −5% custo tensão (multiplicador)
-            if (a.bonusTensao < 0.10f) a.bonusTensao = 0.10f;
+            // Processado diretamente via escala de cooldown em aplicarUpgradesNaSkill e Main.cpp
             break;
         case PERFURACAO:
             a.bonusPerfuracao += 1.0f;     // +1 perfuração flat

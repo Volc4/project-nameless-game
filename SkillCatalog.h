@@ -71,13 +71,28 @@ inline SkillData aplicarUpgradesNaSkill(SkillData s,
         }
     }
 
-    // CADENCIA: −5% custo tensão por nível (torna o disparo mais barato)
+ // CADENCIA: Troca de atributos (Mais rapidez e economia, menos dano por impacto)
     int nivelCadencia = upgrades.niveis[CADENCIA];
     if (nivelCadencia > 0) {
-        float fator = 1.0f - 0.05f * nivelCadencia;
-        if (fator < 0.1f) fator = 0.1f;
-        s.custoTensao *= fator;
-        if (s.custoTensao < 1.0f) s.custoTensao = 1.0f;
+        // 1. Aumenta a velocidade de disparo (reduz o cooldown em 20% por nível)
+        float fatorCooldown = 1.0f - 0.20f * (float)nivelCadencia;
+        if (fatorCooldown < 0.1f) fatorCooldown = 0.1f;
+        s.cooldown *= fatorCooldown;
+
+        // 2. Reduz o custo de tensão do disparo (-10% por nível)
+        float fatorTensao = 1.0f - 0.10f * (float)nivelCadencia;
+        if (fatorTensao < 0.1f) fatorTensao = 0.1f;
+        s.custoTensao *= fatorTensao;
+
+        // 3. Reduz ligeiramente o dano base (-10% por nível)
+        float fatorDano = 1.0f - 0.10f * (float)nivelCadencia;
+        for (int i = 0; i < s.numEfeitos; ++i) {
+            if (s.efeitos[i].tipo == EFE_DAMAGE || s.efeitos[i].tipo == EFE_SHOCK) {
+                s.efeitos[i].valor = (int)((float)s.efeitos[i].valor * fatorDano + 0.5f);
+                // Garante que o projétil cause no mínimo 1 de dano
+                if (s.efeitos[i].valor < 1) s.efeitos[i].valor = 1;
+            }
+        }
     }
 
     // PERFURACAO: +1 por nível

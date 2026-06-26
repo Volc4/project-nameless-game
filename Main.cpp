@@ -445,72 +445,104 @@ static void atualizarJogador(float dt) {
     Jogador& p = g_jogo.protagonista;
     if (!p.vivo) return;
 
-    // Movimento WASD
-    float dx = 0.0f, dz = 0.0f;
+    if (p.temporizadorIframe > 0.0f) {
+        p.temporizadorIframe -= dt;
+    }
+
+    float dx = 0.0f;
+    float dz = 0.0f;
+
     if (g_teclaW) dz -= 1.0f;
     if (g_teclaS) dz += 1.0f;
     if (g_teclaA) dx -= 1.0f;
     if (g_teclaD) dx += 1.0f;
 
-    float len = std::sqrt(dx*dx + dz*dz);
+    float len = std::sqrt(dx * dx + dz * dz);
     if (len > 0.0001f) {
-        dx /= len; dz /= len;
+        dx /= len; 
+        dz /= len;
+
         p.posicao.x += dx * p.velocidade * dt;
         p.posicao.z += dz * p.velocidade * dt;
-        // Limite da arena
-        if (p.posicao.x >  ARENA_HALF) p.posicao.x =  ARENA_HALF;
-        if (p.posicao.x < -ARENA_HALF) p.posicao.x = -ARENA_HALF;
-        if (p.posicao.z >  ARENA_HALF) p.posicao.z =  ARENA_HALF;
-        if (p.posicao.z < -ARENA_HALF) p.posicao.z = -ARENA_HALF;
+
+        // Limite da arena corrigido para a borda visual (ARENA_HALF)
+        // Subtraímos o raio de colisão para que a borda do modelo bata na parede, não o centro
+        float limiteParede = ARENA_HALF - p.raioColisao;
+        
+        if (p.posicao.x >  limiteParede) p.posicao.x =  limiteParede;
+        if (p.posicao.x < -limiteParede) p.posicao.x = -limiteParede;
+        if (p.posicao.z >  limiteParede) p.posicao.z =  limiteParede;
+        if (p.posicao.z < -limiteParede) p.posicao.z = -limiteParede;
     }
 
-    // Stand segue o jogador com offset em direção ao cursor
-    Vetor3D dir = obterDirecaoNormalizada(p.posicao, g_posicaoCursor);
-    g_jogo.stand.posicao.x = p.posicao.x + dir.x * 1.5f;
-    g_jogo.stand.posicao.z = p.posicao.z + dir.z * 1.5f;
-    g_jogo.stand.anguloMira = std::atan2(dir.z, dir.x);
+   // --- Movimento do Stand: Fixo atrás do jogador ---
+    // Removemos o cálculo com o cursor. 
+    // Usamos um offset fixo no eixo Z (ex: 1.5 unidades atrás)
+    // Se quiser que ele fique em outro lugar, altere os valores de offset.x/z
+    
+    // --- Cálculo do movimento para o Stand ---
+    // 'dx' e 'dz' já contêm a direção do movimento (-1 a 1)
+    
+    // Distância que o Stand fica do jogador
+    float distanciaStand = 1.5f;
 
-    // Iframe
-    if (p.temporizadorIframe > 0.0f)
-        p.temporizadorIframe -= dt;
-
-    // Coleta de gemas
-    for (size_t i = 0; i < g_jogo.gemas.size(); ++i) {
-        GemaXP& g = g_jogo.gemas[i];
-        if (g.coletada) continue;
-        float d2 = calcularDistanciaQuadrada(p.posicao, g.posicao);
-        if (d2 < 2.5f * 2.5f) {
-            g.coletada = true;
-            // XP já creditado em processarMorteZumbi; a gema é só visual.
-        }
+    // Se o jogador estiver parado, mantemos a última direção ou um padrão (ex: atrás no Z)
+    if (len < 0.0001f) {
+        g_jogo.stand.posicao.x = p.posicao.x;
+        g_jogo.stand.posicao.z = p.posicao.z + distanciaStand; // Padrão: atrás no eixo Z
+    } else {
+        // O Stand fica no lado oposto ao movimento
+        // dx e dz são normalizados, então o Stand sempre ficará a 1.5 de distância
+        g_jogo.stand.posicao.x = p.posicao.x - (dx * distanciaStand);
+        g_jogo.stand.posicao.z = p.posicao.z - (dz * distanciaStand);
     }
 
-    // Sobrecarga de tensão
-    if (g_jogo.stand.tensaoAtual >= 100.0f && !g_jogo.stand.emSobrecarga) {
-        g_jogo.stand.emSobrecarga = true;
-        g_jogo.stand.tensaoAtual  = 100.0f;
-    }
+    // O Stand continua mirando no cursor, mas sua base está fixa nas costas
+    Vetor3D dirMira = obterDirecaoNormalizada(p.posicao, g_posicaoCursor);
+    g_jogo.stand.anguloMira = std::atan2(dirMira.z, dirMira.x);
+
+// --- Controle de Sobrecarga e Resfriamento de Tensão ---
     if (g_jogo.stand.emSobrecarga) {
-        g_jogo.stand.tensaoAtual -= 20.0f * dt; // drena durante sobrecarga
+        g_jogo.stand.tensaoAtual -= 20.0f * dt; 
         if (g_jogo.stand.tensaoAtual <= 0.0f) {
             g_jogo.stand.tensaoAtual  = 0.0f;
             g_jogo.stand.emSobrecarga = false;
         }
+    } else {
+        if (g_jogo.stand.tensaoAtual >= 100.0f) {
+            g_jogo.stand.emSobrecarga = true;
+            g_jogo.stand.tensaoAtual  = 100.0f;
+        } 
+        else if (!g_cliqueMouse) {
+            // Esvazia a barra continuamente quando o botão não está pressionado
+            g_jogo.stand.tensaoAtual -= 15.0f * dt; 
+            if (g_jogo.stand.tensaoAtual < 0.0f) {
+                g_jogo.stand.tensaoAtual = 0.0f;
+            }
+        }
     }
 
-    // Disparo contínuo por clique com cooldown
-static float s_cooldownDisparo = 0.0f;
-s_cooldownDisparo -= dt;
+    // --- Disparo Contínuo por Clique ---
+    static float s_cooldownDisparo = 0.0f;
+    if (s_cooldownDisparo > 0.0f) {
+        s_cooldownDisparo -= dt;
+    }
 
 if (g_cliqueMouse && !g_jogo.stand.emSobrecarga && !g_jogo.jogoPausado) {
-    g_jogo.atirandoAgora = true;
-    if (s_cooldownDisparo <= 0.0f) {
-        g_skills.executar(g_jogo, g_posicaoCursor);
-        s_cooldownDisparo = 0.3f;  // dispara a cada 0.3 segundos
+        g_jogo.atirandoAgora = true;
+        if (s_cooldownDisparo <= 0.0f) {
+            g_skills.executar(g_jogo, g_posicaoCursor);
+            
+            // Cooldown do clique manual afetado pela velocidade da cadência
+            float baseCooldown = 0.3f;
+            int nivelCadencia  = g_jogo.protagonista.upgrades.niveis[CADENCIA];
+            float fator = 1.0f - 0.20f * (float)nivelCadencia;
+            if (fator < 0.1f) fator = 0.1f;
+            
+            s_cooldownDisparo = baseCooldown * fator;  
+        }
+        g_jogo.atirandoAgora = false;
     }
-} else {
-    g_jogo.atirandoAgora = false;
-}
 }
 
 // =============================================================================
@@ -598,15 +630,26 @@ static void atualizarSpawn(float dt) {
     g_jogo.tempoSobrevivido += dt;
     g_jogo.tempoUltimoSpawn += dt;
 
-    // Cooldown diminui com o tempo (fica mais difícil)
-    float cooldown = 2.5f - g_jogo.tempoSobrevivido * 0.005f;
-    if (cooldown < 0.5f) cooldown = 0.5f;
+    // Reduzimos o cooldown base de 2.5s para 1.0s. 
+    // O decréscimo foi suavizado para o jogo não ficar impossível rápido demais.
+    float cooldown = 1.0f - g_jogo.tempoSobrevivido * 0.002f;
+    
+    // Novo limite mínimo de cooldown (0.2s em vez de 0.5s) para o late game
+    if (cooldown < 0.2f) cooldown = 0.2f;
 
     if (g_jogo.tempoUltimoSpawn >= cooldown) {
         g_jogo.tempoUltimoSpawn = 0.0f;
-        int n = 1 + (int)(g_jogo.tempoSobrevivido / 30.0f);
-        if (n > 5) n = 5;
-        for (int i = 0; i < n; ++i) spawnarZumbi();
+        
+        // Aumentamos a base de 1 para 3 zumbis por ciclo inicial.
+        // A taxa de crescimento agora adiciona 1 zumbi extra a cada 20 segundos.
+        int n = 3 + (int)(g_jogo.tempoSobrevivido / 20.0f);
+        
+        // O limite máximo de zumbis por ciclo de spawn subiu de 5 para 12
+        if (n > 12) n = 12; 
+        
+        for (int i = 0; i < n; ++i) {
+            spawnarZumbi();
+        }
     }
 }
 
@@ -624,12 +667,20 @@ static void configurarCamera() {
     glLoadIdentity();
 
     Vetor3D& p = g_jogo.protagonista.posicao;
-    float eyeX = p.x + CAM_DIST * std::cos(CAM_ANGLE_X * 3.14159265f / 180.0f);
-    float eyeY = CAM_DIST * std::sin(CAM_ANGLE_X * 3.14159265f / 180.0f) * 1.5f;
-    float eyeZ = p.z + CAM_DIST;
-    gluLookAt(eyeX, eyeY, eyeZ,
-              p.x,   1.0f,  p.z,
-              0.0,   1.0,   0.0);
+    
+    // Distância da câmera (offset)
+    float dist = CAM_DIST; 
+    
+    // Para alinhar o Norte (Z-) com o topo da tela, 
+    // a câmera deve estar posicionada no lado positivo do Z e olhar para o negativo.
+    // Ajuste o ângulo de visão para uma perspectiva isométrica limpa (45 graus de inclinação)
+    float eyeX = p.x;              // Câmera alinhada ao X do jogador
+    float eyeZ = p.z + dist;       // Câmera recuada no Z
+    float eyeY = dist * 0.8f;      // Altura da câmera
+    
+    gluLookAt(eyeX, eyeY, eyeZ,    // Posição da câmera
+              p.x, 0.0f, p.z,      // Ponto focal (onde a câmera olha)
+              0.0f, 1.0f, 0.0f);   // Vetor "UP" (para cima)
 }
 
 // Chão da arena

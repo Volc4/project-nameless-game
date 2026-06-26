@@ -245,7 +245,7 @@ static const char* NOME_ATRIB[TOTAL_UPGRADES] = {
 
 static const char* DESC_ATRIB[TOTAL_UPGRADES] = {
     "+10% de dano em todos os ataques",
-    "+5% menos custo de tensao",
+    "+20% Vel. de disparo e -10% custo de tensao, mas -10% de dano base",
     "+1 perfuracao em todos os ataques",
     "-10% custo de tensao por disparo",
     "+20% velocidade de movimento",

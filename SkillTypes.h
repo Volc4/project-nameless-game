@@ -240,7 +240,7 @@ inline SkillData buildBase() {
     s.numEfeitos       = 1;
 
     // Custo e cooldown: modo manual, 1 de tensão
-    s.custoTensao = 1.0f;
+    s.custoTensao = 10.0f;
     s.cooldown    = 0.0f;
 
     return s;

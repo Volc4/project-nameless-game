@@ -763,7 +763,9 @@ inline void limparEntidadesInativas(EstadoDoJogo& jogo) {
 
     std::vector<GemaXP> gemasVisiveis;
     for (size_t i = 0; i < jogo.gemas.size(); ++i) {
-        if (!jogo.gemas[i].coletada) gemasVisiveis.push_back(jogo.gemas[i]);
+        if (!jogo.gemas[i].coletada) { // Apenas mantém as NÃO coletadas
+            gemasVisiveis.push_back(jogo.gemas[i]);
+        }
     }
     jogo.gemas = gemasVisiveis;
 }
