@@ -18,10 +18,10 @@ enum TipoUpgrade {
     DANO       = 0,
     CADENCIA   = 1,
     PERFURACAO = 2,
-    TENSAO_UP  = 3,
-    VELOCIDADE = 4,
-    VIDA       = 5,
-    QUANTIDADE = 6,   // quantidade de balas (forma.quantidade) — base dos arquétipos
+    QUANTIDADE = 3,
+    TENSAO_UP     = 4,
+    VIDA          = 5,
+    VELOCIDADE_UP = 6,
     TOTAL_UPGRADES = 7
 };
 
@@ -118,6 +118,10 @@ struct Entidade {
 
     bool parryBemSucedido;
     float temporizadorFeedback;
+
+    bool  devorarPedido;
+    float temporizadorDevorar;
+    float temporizadorCooldownDevorar;
 };
 
 struct GemaXP {
@@ -168,6 +172,17 @@ struct Zumbi {
     float raioColisao;
     bool vivo;
     int vida;
+    int dano;        // dano de contato (aplicado via p.hp -= z.dano)
+    float tiroTimer; // timer de cooldown do ATIRADOR entre disparos
+};
+
+// Projétil disparado pelo Atirador (devorável, move-se em linha reta)
+struct ProjetilZumbi {
+    Vetor3D posicao;
+    Vetor3D direcao;    // normalizada, rumo ao jogador no momento do disparo
+    float   velocidade;
+    int     dano;
+    bool    ativo;
 };
 
 // ===========================================================================
@@ -269,6 +284,7 @@ struct EstadoDoJogo {
 
     std::vector<Particula> particulas;
     std::vector<FloatingDamage> numerosFlutuantes;
+    std::vector<ProjetilZumbi> projeteisZumbi;
 
     float tempoSobrevivido;
 
@@ -303,5 +319,78 @@ struct EstadoDoJogo {
     // Sistema de Arquétipos — especialização irreversível da arma base.
     EstadoArquetipo arquetipoArma;
 };
+
+// ---------------------------------------------------------------------------
+// Tensão por nível de TENSAO_UP — fonte única dos parâmetros da barra.
+//   maxTensaoDoNivel      : limite máximo antes da sobrecarga
+//   taxaDecaimentoDoNivel : velocidade de esvaziamento quando não está atirando
+// ---------------------------------------------------------------------------
+inline float maxTensaoDoNivel(int nivel) {
+    if (nivel == 1) return 130.0f;
+    if (nivel == 2) return 160.0f;
+    if (nivel >= 3) return 200.0f;
+    return 100.0f; // nivel 0
+}
+
+// fatorVelocidadeDoNivel — multiplicador de velocidade do jogador.
+//   Nivel 0->1.0x  Nivel 1->1.25x  Nivel 2->1.5x  Nivel 3+->2.0x
+inline float fatorVelocidadeDoNivel(int nivel) {
+    if (nivel == 1) return 1.25f;
+    if (nivel == 2) return 1.50f;
+    if (nivel >= 3) return 2.00f;
+    return 1.0f;
+}
+
+inline float taxaDecaimentoTensaoDoNivel(int nivel) {
+    if (nivel == 1) return 22.0f;
+    if (nivel == 2) return 35.0f;
+    if (nivel >= 3) return 55.0f;
+    return 15.0f; // nivel 0
+}
+
+// ---------------------------------------------------------------------------
+// Fontes únicas dos atributos de upgrade — devem ficar aqui para que tanto
+// SkillCatalog.h quanto GameLogic.h (e ArmaInteligente.h) as enxerguem,
+// já que entities.h é o header base incluído por todos.
+// ---------------------------------------------------------------------------
+
+inline float fatorDanoDoNivel(int nivel) {
+    if (nivel == 1) return 2.0f;
+    if (nivel == 2) return 4.0f;
+    if (nivel >= 3) return 8.0f;
+    return 1.0f; // nivel 0
+}
+
+inline int quantidadeDoNivel(int nivel) {
+    if (nivel == 1) return 3;  // centro + 2 (±0.20 rad)
+    if (nivel == 2) return 5;  // centro + 4 (±0.20, ±0.40 rad)
+    if (nivel >= 3) return 7;  // centro + 6 (±0.20, ±0.40, ±0.60 rad)
+    return 1; // nivel 0
+}
+
+// Entrada: nível do atributo CADENCIA (0–3)
+// Saída:   multiplicador do cooldown (< 1.0 = mais rápido)
+//   Nivel 0 -> 1.00  Nivel 1 -> 0.75  Nivel 2 -> 0.50  Nivel 3 -> 0.25
+inline float fatorCadenciaDoNivel(int nivel) {
+    if (nivel == 1) return 0.75f;
+    if (nivel == 2) return 0.50f;
+    if (nivel >= 3) return 0.25f;
+    return 1.0f; // nivel 0
+}
+
+// ---------------------------------------------------------------------------
+// perfuracaoDoNivel — FONTE ÚNICA do atributo PERFURAÇÃO.
+//   Nivel 0->0  Nivel 1->2  Nivel 2->5  Nivel 3->"tudo"
+//   PERFURACAO_INFINITA funciona direto no loop de colisão do SkillManager
+//   (if perfuracaoRestante <= 0 -> morre), sem sentinela especial.
+// ---------------------------------------------------------------------------
+const int PERFURACAO_INFINITA = 1000000;
+
+inline int perfuracaoDoNivel(int nivel) {
+    if (nivel <= 0) return 0;
+    if (nivel == 1) return 2;
+    if (nivel == 2) return 5;
+    return PERFURACAO_INFINITA; // nivel 3+
+}
 
 #endif // ENTITIES_H

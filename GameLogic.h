@@ -25,19 +25,6 @@ const float RAIO_EXPULSAO_PARRY     = 15.0f;
 // ===========================================================================
 const int NIVEL_MAXIMO_UPGRADE = 3;
 
-// Valores base antes de qualquer upgrade
-const int   DANO_BASE            = 1;
-const float CADENCIA_COOLDOWN_BASE = 0.0f;  // Sem cooldown automático no sistema atual (clique manual)
-const int   PERFURACAO_BASE      = 0;
-const float VELOCIDADE_BASE      = 10.0f;
-const int   HP_BASE              = 3;
-
-// Ganhos por nível de upgrade
-const int   GANHO_DANO_POR_NIVEL       = 1;    // +1 de dano por nível
-const float GANHO_TENSAO_REDUCAO       = 2.0f; // -2s de cooldown do parry por nível
-const int   GANHO_PERFURACAO_POR_NIVEL = 1;    // +1 de perfuração por nível
-const float GANHO_VELOCIDADE_POR_NIVEL = 2.0f; // +2 de velocidade por nível
-const int   GANHO_HP_POR_NIVEL         = 1;    // +1 de HP máximo por nível
 
 // ===========================================================================
 // CÁLCULO DINÂMICO DOS ATRIBUTOS
@@ -54,16 +41,6 @@ inline int calcularDanoBase(int nivelDano) {
     return 1; // Nível 0 (Base)
 }
 
-// Entrada: nível do atributo CADENCIA (0–3)
-// Saída:   quantidade de projéteis disparados por clique
-inline int calcularQuantidadeTiros(int nivelCadencia) {
-    if (nivelCadencia == 1) return 2; // Tiro duplo em "V"
-    if (nivelCadencia == 2) return 5; // Espingarda (Cone de 5 tiros)
-    if (nivelCadencia >= 3) return 8; // Explosão Estelar (8 tiros em todas as direções)
-    
-    return 1; // Nível 0 (Base - 1 tiro reto)
-}
-
 // Entrada: nível do atributo DANO (0–3)
 // Saída:   multiplicador de área/tamanho do projétil
 inline float calcularMultiplicadorTamanho(int nivelDano) {
@@ -74,59 +51,6 @@ inline float calcularMultiplicadorTamanho(int nivelDano) {
     return 1.0f; // Nível 0 (Base)
 }
 
-// Entrada: nível do atributo PERFURACAO (0–3)
-// Saída:   número de inimigos extras que o projétil pode atravessar
-// Entrada: nível do atributo PERFURACAO (0–3)
-// Saída:   número de inimigos extras que o projétil pode atravessar
-inline int calcularPerfuracaoBase(int nivelPerfuracao) {
-    if (nivelPerfuracao == 1) return 1;    // Atravessa 1 inimigo (acerta 2 no total)
-    if (nivelPerfuracao == 2) return 5;    // Atravessa 5 inimigos
-    if (nivelPerfuracao >= 3) return 9999; // Perfuração Infinita
-    
-    return 0; // Nível 0 (não atravessa ninguém)
-}
-
-// Entrada: nível do atributo VELOCIDADE (0–3)
-// Saída:   velocidade de movimento do jogador
-inline float calcularVelocidadeJogador(int nivelVelocidade) {
-    if (nivelVelocidade == 1) return 13.0f; // Confortável para fugir (+30%)
-    if (nivelVelocidade == 2) return 18.0f; // Muito ágil, escapa facilmente de encurralamentos
-    if (nivelVelocidade >= 3) return 28.0f; // Velocidade extrema, cruza o mapa instantaneamente
-    
-    return 10.0f; // Nível 0 (Base)
-}
-
-// Entrada: nível do atributo TENSAO_UP (0–3)
-// Saída:   cooldown efetivo do Parry
-inline float calcularCooldownParry(int nivelTensao) {
-    if (nivelTensao == 1) return 1.0f;  // Reduz 0.5s (Uso mais tático)
-    if (nivelTensao == 2) return 0.7f;  // Quase sem recarga
-    if (nivelTensao >= 3) return 0.4f; // Spam infinito (Parry metralhadora)
-    
-    return 1.5f; // Nível 0 (Base)
-}
-
-// Entrada: nível do atributo TENSAO_UP (0–3)
-// Saída:   fator de redução da taxa de acúmulo de tensão por tiro (0.0 = sem redução)
-// Entrada: nível do atributo TENSAO_UP (0–3)
-// Saída:   fator de redução da taxa de acúmulo de tensão por tiro
-inline float calcularReducaoTensaoPorTiro(int nivelTensao) {
-    if (nivelTensao == 1) return 0.20f; // 30% menos tensão gerada ao atirar
-    if (nivelTensao == 2) return 0.50f; // 70% menos tensão (Pode atirar à vontade)
-    if (nivelTensao >= 3) return 0.70f;  // 100% de redução (Atirar não gera MAIS NENHUMA tensão, a arma esfria)
-    
-    return 0.0f; // Nível 0 (Base)
-}
-
-// Entrada: nível do atributo VIDA (0–3)
-// Saída:   HP máximo do jogador
-inline int calcularHPMaximo(int nivelVida) {
-    if (nivelVida == 1) return 5;  // +2 HP (Uma pequena folga)
-    if (nivelVida == 2) return 7;  // +6 HP (Resistente a grandes erros)
-    if (nivelVida >= 3) return 10; // +17 HP (O verdadeiro "Survivor")
-    
-    return 3; // Nível 0 (Base)
-}
 
 // ===========================================================================
 // SEÇÃO: DETERMINAÇÃO DO TIPO DE DISPARO
@@ -199,14 +123,6 @@ inline void aplicarEscolhaMenu(EstadoDoJogo& jogo, int indiceEscolha) {
                           skillManager,
                           jogo.protagonista);
 
-    // Limpa o estado do Tensao_UP se foi atualizado (parry cooldown)
-    if (escolha.tipo == ESCOLHA_ATRIBUTO_GLOBAL &&
-        escolha.referencia == (int)TENSAO_UP) {
-        jogo.stand.cooldownParry = calcularCooldownParry(
-            jogo.protagonista.upgrades.niveis[TENSAO_UP]);
-        if (jogo.stand.temporizadorCooldown > jogo.stand.cooldownParry)
-            jogo.stand.temporizadorCooldown = jogo.stand.cooldownParry;
-    }
 }
 // ===========================================================================
 // SEÇÃO: MOVIMENTAÇÃO E ENTIDADES
@@ -247,9 +163,9 @@ inline Zumbi invocarZumbi(TipoZumbi tipoDesejado, Vetor3D posicaoInicial) {
 
     switch (tipoDesejado) {
         case NORMAL:
-            z.velocidade = 2.0f; z.raioColisao = 0.75f; z.vida = 1;  break;
+            z.velocidade = 0.0f; z.raioColisao = 0.75f; z.vida = 2;  break;
         case RAPIDO:
-            z.velocidade = 4.5f; z.raioColisao = 0.55f; z.vida = 1;  break;
+            z.velocidade = 3.0f; z.raioColisao = 0.55f; z.vida = 1;  break;
         case TANK:
             z.velocidade = 1.2f; z.raioColisao = 1.10f; z.vida = 10; break;
         case ATIRADOR:

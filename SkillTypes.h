@@ -124,6 +124,10 @@ struct FormaData {
     int   perfuracao;       // Projectile: quantos inimigos atravessa (0 = 1 alvo)
     int   saltosMax;        // Chain: número máximo de saltos
     int   geracoesMax;      // Prism: profundidade máxima de divisões (recursão segura)
+
+    // Cor customizada do projétil — (0,0,0) usa padrão amarelo do render.
+    // Definido pelo arquétipo ou pela skill; lido por SkillRender.h.
+    float corR, corG, corB;
 };
 
 // ===========================================================================
@@ -197,6 +201,7 @@ struct SkillData {
 
     float       custoTensao;    // tensão gasta por disparo
     float       cooldown;       // segundos entre disparos automáticos (0 = manual)
+    float       cooldownManual; // se > 0, sobrescreve baseCooldown do disparo manual em Main.cpp
 };
 
 // ---------------------------------------------------------------------------
@@ -225,7 +230,7 @@ inline SkillData buildBase() {
 
     // Movimento: linear padrão
     s.movimento.tipo      = MOV_LINEAR;
-    s.movimento.velocidade = 20.0f;
+    s.movimento.velocidade = 52.0f;
 
     // Origem: Stand padrão
     s.origem.tipo              = ORIG_STAND;
@@ -236,7 +241,7 @@ inline SkillData buildBase() {
 
     // Efeito padrão: 1 de dano
     s.efeitos[0].tipo  = EFE_DAMAGE;
-    s.efeitos[0].valor = 1;
+    s.efeitos[0].valor = 5;
     s.numEfeitos       = 1;
 
     // Custo e cooldown: modo manual, 1 de tensão

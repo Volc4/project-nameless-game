@@ -259,11 +259,22 @@ inline bool atualizarForma(const SkillData& s, RuntimeSkill& r, float dt) {
             }
             return false;
         }
+        case FORMA_ARC: {
+            // Arco-projétil: sincroniza centro com posição para que o arco
+            // se mova como um projétil. Ticks controlam frequência de dano.
+            r.centro = r.posicao;
+            r.tickAcumulado += dt;
+            if (r.tickAcumulado >= s.forma.tickIntervalo) {
+                r.tickAcumulado -= s.forma.tickIntervalo;
+                return true;
+            }
+            return false;
+        }
         case FORMA_EXPLOSION:
             // instantânea: aplica uma vez, depois expira no frame seguinte
             return true;
         default:
-            // Projectile/Cone/Ring/Prism/Chain/Wave/Arc: colisão por contato
+            // Projectile/Cone/Ring/Prism/Chain/Wave: colisão por contato
             return true;
     }
 }
@@ -328,14 +339,24 @@ inline void aplicarDanoZumbi(EstadoDoJogo& jogo, Zumbi& z, int dano) {
     }
 }
 
-inline void resolverEfeitos(const SkillData& s, RuntimeSkill& /*r*/,
+inline void resolverEfeitos(const SkillData& s, const RuntimeSkill& r,
                             Zumbi& z, EstadoDoJogo& jogo) {
+    // Bumerangue na fase de volta: metade do dano (comportamento genérico,
+    // não específico ao arquétipo — qualquer MOV_BOOMERANG herda isso).
+    bool retornoBumerangue = (s.movimento.tipo == MOV_BOOMERANG && r.fase == 1);
+
     for (int i = 0; i < s.numEfeitos; ++i) {
         const EfeitoData& e = s.efeitos[i];
         switch (e.tipo) {
-            case EFE_DAMAGE:
-                aplicarDanoZumbi(jogo, z, e.valor);
+            case EFE_DAMAGE: {
+                int dano = e.valor;
+                if (retornoBumerangue) {
+                    dano = dano / 2;
+                    if (dano < 1) dano = 1;
+                }
+                aplicarDanoZumbi(jogo, z, dano);
                 break;
+            }
             case EFE_DRAIN:                       // antigo efeitoDrenarTensao
                 if (!jogo.stand.emSobrecarga) {
                     jogo.stand.tensaoAtual -= (e.valor > 0 ? (float)e.valor : 3.0f);

@@ -149,7 +149,7 @@ inline SkillData buildEspiritoCacadorNivel(int nivel) {
     } else if (nivel == 2) {
         s.movimento.velocidade   = 18.0f;     // muito mais rápido
         s.movimento.taxaCorrecao = 0.55f;
-        s.forma.perfuracao       = 9999;      // atravessa todos
+        s.forma.perfuracao       = PERFURACAO_INFINITA;      // atravessa todos
         s.cooldown               = 1.7f;
         s.efeitos[0].tipo = EFE_DAMAGE; s.efeitos[0].valor = 8; // +40%
         s.numEfeitos = 1;
@@ -157,7 +157,7 @@ inline SkillData buildEspiritoCacadorNivel(int nivel) {
         s.forma.tipo       = FORMA_CONE;
         s.forma.quantidade = 3;               // três espíritos
         s.forma.spreadAngulo = 0.40f;
-        s.forma.perfuracao = 9999;
+        s.forma.perfuracao = PERFURACAO_INFINITA;
         s.movimento.velocidade   = 20.0f;
         s.movimento.taxaCorrecao = 0.60f;
         s.cooldown               = 1.6f;

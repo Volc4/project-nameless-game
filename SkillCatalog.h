@@ -59,11 +59,10 @@ inline void liberarPorUpgrade(EstadoDesbloqueio& d,
 inline SkillData aplicarUpgradesNaSkill(SkillData s,
                                          const SistemaUpgrades& upgrades,
                                          const EstadoDesbloqueio& /*d*/) {
-    // DANO: Aumenta o dano base e o tamanho do projétil (raio de colisão)
+    // DANO: fatorDanoDoNivel() é a fonte única do multiplicador (base * 2^nivel)
     int nivelDano = upgrades.niveis[DANO];
     if (nivelDano > 0) {
-        // Exemplo: +30% de dano por nível para ser mais impactante
-        float fatorDano = 1.0f + 0.10f * (float)nivelDano;
+        float fatorDano = fatorDanoDoNivel(nivelDano);
         
         // Aumenta o tamanho (hitbox visual) em +20% por nível (recupera a ideia original)
         float fatorTamanho = 1.0f + 0.20f * (float)nivelDano;
@@ -77,13 +76,10 @@ inline SkillData aplicarUpgradesNaSkill(SkillData s,
         }
     }
 
- // CADENCIA: Troca de atributos (Mais rapidez e economia, menos dano por impacto)
+    // CADENCIA: fatorCadenciaDoNivel() é a fonte única do multiplicador de cooldown
     int nivelCadencia = upgrades.niveis[CADENCIA];
     if (nivelCadencia > 0) {
-        // 1. Aumenta a velocidade de disparo (reduz o cooldown em 20% por nível)
-        float fatorCooldown = 1.0f - 0.20f * (float)nivelCadencia;
-        if (fatorCooldown < 0.1f) fatorCooldown = 0.1f;
-        s.cooldown *= fatorCooldown;
+        s.cooldown *= fatorCadenciaDoNivel(nivelCadencia);
 
         // 2. Reduz o custo de tensão do disparo (-10% por nível)
         float fatorTensao = 1.0f - 0.10f * (float)nivelCadencia;
@@ -101,31 +97,19 @@ inline SkillData aplicarUpgradesNaSkill(SkillData s,
         }
     }
 
-   // PERFURACAO: +2 perfuração e +10 alcance máximo por nível
+    // PERFURACAO: perfuracaoDoNivel() é a fonte única do valor de perfuração
     int nivelPerf = upgrades.niveis[PERFURACAO];
     if (nivelPerf > 0) {
-        s.forma.perfuracao += 2 * nivelPerf;
+        s.forma.perfuracao += perfuracaoDoNivel(nivelPerf);
         s.forma.alcanceMax += 10.0f * (float)nivelPerf;
     }
 
-    // QUANTIDADE: +1 projétil por nível (quantidade de balas do disparo).
-    //   Afeta forma.quantidade — o spawner gera N sub-projéteis em leque.
+    // QUANTIDADE: quantidadeDoNivel() define o total absoluto de projéteis.
     int nivelQtd = upgrades.niveis[QUANTIDADE];
     if (nivelQtd > 0) {
-        if (s.forma.quantidade < 1) s.forma.quantidade = 1;
-        s.forma.quantidade += nivelQtd;
-        // garante um spread mínimo para o leque ser visível quando >1
-        if (s.forma.quantidade > 1 && s.forma.spreadAngulo < 0.05f)
-            s.forma.spreadAngulo = 0.12f;
-    }
-
-    // TENSAO_UP: −10% custo tensão por nível
-    int nivelTensao = upgrades.niveis[TENSAO_UP];
-    if (nivelTensao > 0) {
-        float fator = 1.0f - 0.10f * nivelTensao;
-        if (fator < 0.05f) fator = 0.05f;
-        s.custoTensao *= fator;
-        if (s.custoTensao < 1.0f) s.custoTensao = 1.0f;
+        s.forma.quantidade = quantidadeDoNivel(nivelQtd);
+        // spread fixo por bala — cone fica mais aberto conforme a quantidade
+        s.forma.spreadAngulo = 0.20f;
     }
 
     return s;

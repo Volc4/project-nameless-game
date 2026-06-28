@@ -43,6 +43,12 @@
 #include "ArquetipoSystem.h"   // especialização irreversível da arma
 #include "ArmaInteligente.h"   // classe Arma Inteligente (exclusiva, 3 níveis)
 #include "SkillRender.h"       // desenharSkill, desenharTodasSkills
+#include "Map.h"               // mapa balada: desenharMapaBalada, processarColisoesCenario
+#include "Audio.h"
+
+// --- Modelo animado da protagonista (Assimp + GLM + stb_image) ---------------
+#define STB_IMAGE_IMPLEMENTATION
+#include "ModeloAnimado.h"
 
 // --- STL / CRT ---------------------------------------------------------------
 #include <vector>
@@ -56,11 +62,35 @@
 //  CONSTANTES GLOBAIS
 // =============================================================================
 
+// --- Devorar (ESPAÇO) — parâmetros centralizados aqui ---------------------------
+static const float DEVORAR_DURACAO_JANELA           = 0.35f;  // s de janela ativa
+static const float DEVORAR_ALCANCE                  = 3.0f;   // raio do setor
+static const float DEVORAR_ANGULO                   = 1.67f;// abertura (~90°)
+static const float DEVORAR_COOLDOWN                 = 1.5f;   // s entre usos
+static const float DEVORAR_LUNGE                    = 0.5f;   // avanço na ativação
+static const bool  DEVORAR_SUCESSO_LIMPA_SOBRECARGA = true;   // sucesso sai do overload
+
+// --- Inimigos ---------------------------------------------------------------
+static const float SPAWN_INTERVALO    = 3.0f;  // segundos entre ticks de spawn
+static const int   SPAWN_BASE         = 3;     // zumbis base por tipo por tick (multiplicado pelo mult exponencial)
+static const int   SPAWN_MULT_MAX     = 64;    // multiplicador máximo (6 dobramentos)
+static const int   HORDA_MAX          = 1500;   // cap total de zumbis ativos
+static const float SPAWN_RAIO_MIN     = 32.0f; // distância mínima do jogador no spawn
+static const float SPAWN_RAIO_MAX     = 45.0f; // distância máxima do jogador no spawn (fora da tela)
+static const float ATIRADOR_DIST      = 15.0f; // distância preferida do Atirador
+static const float ATIRADOR_COOLDOWN  = 2.5f;  // s entre disparos do Atirador
+static const float PROJETIL_ZUMBI_VEL = 12.0f; // velocidade dos projéteis
+static const int   PROJETIL_ZUMBI_DANO = 1;    // dano dos projéteis
+static const float EXPLOSAO_RAIO      = 3.0f;  // raio da explosão do Explosivo
+
 static const float ARENA_HALF   = 150.0f;   // metade do lado da arena quadrada
 static const float CAM_DIST     = 30.0f;    // distância da câmera ao ponto focal
 static const float CAM_ANGLE_X  = 45.0f;   // inclinação da câmera (graus)
 static const int   JANELA_W     = 1024;
 static const int   JANELA_H     = 768;
+
+// Tamanho real da janela (atualizado em cbReshape)
+static int g_winW = JANELA_W, g_winH = JANELA_H;
 
 // Constante exigida por SkillExecutor.h (extern)
 const float FATOR_DANO_SOBRECARGA = 2.5f;
@@ -68,6 +98,10 @@ const float FATOR_DANO_SOBRECARGA = 2.5f;
 // =============================================================================
 //  ESTADO GLOBAL
 // =============================================================================
+
+static bool g_musicaSecreta = false; // Flag da música secreta
+
+
 
 static EstadoDoJogo  g_jogo;
 static SkillManager  g_skills;
@@ -85,6 +119,21 @@ static bool g_cliqueMouse = false;
 
 // Flag de estado
 static bool g_jogoTerminado = false;
+static int  g_kills         = 0;
+
+// --- Modelo da protagonista Sofia -------------------------------------------
+static ModeloAnimado g_sofia;
+static bool          g_sofiaCarregada = false;
+
+// Diminuímos a escala em 20% (de 0.01f para 0.008f)
+static const float   SOFIA_ESCALA     = 0.008f; 
+
+// Mantém a correção de rotação
+static const float   SOFIA_ROT_OFFSET = 90.0f;
+
+// Subimos ela mais no eixo Y. Como ela estava nas coxas com 0.9f, 
+// 1.3f deve ser o suficiente para puxar as canelas e as botas pra fora.
+static const float   SOFIA_Y_OFFSET   = 2.0f;
 
 // =============================================================================
 //  PROTÓTIPOS INTERNOS
@@ -93,12 +142,16 @@ static bool g_jogoTerminado = false;
 static void inicializarEstadoJogo();
 static void atualizarJogador(float dt);
 static void atualizarZumbis(float dt);
-static void spawnarZumbi();
+static void atualizarDevorar(EstadoDoJogo& jogo, float dt);
+static void atualizarProjeteisZumbi(float dt);
+static int  multiplicadorSpawn(TipoZumbi tipo, float t);
 static void atualizarParticulas(float dt);
 static void atualizarFloatingDamage(float dt);
 static void desenharCena();
 static void desenharHUD();
 static void desenharMenuLevelUp();
+static void desenharHitboxDevorar();
+static void desenharProjeteisZumbi();
 static Vetor3D projetarMouseNoMundo(int mx, int my);
 
 // =============================================================================
@@ -112,15 +165,16 @@ static Vetor3D projetarMouseNoMundo(int mx, int my);
 void processarMorteZumbi(EstadoDoJogo& jogo, Zumbi& z) {
     if (!z.vivo) return;
     z.vivo = false;
+    g_kills++;
 
-    // XP por tipo
-    int xp = 5;
+    // XP por tipo (×10 temporário para teste de arquétipos)
+    int xp = 1;
     switch (z.tipo) {
-        case RAPIDO:    xp =  8; break;
-        case TANK:      xp = 15; break;
-        case ATIRADOR:  xp = 12; break;
-        case EXPLOSIVO: xp = 10; break;
-        default:        xp =  5; break;
+        case RAPIDO:    xp = 2; break;
+        case TANK:      xp = 5; break;
+        case ATIRADOR:  xp = 3; break;
+        case EXPLOSIVO: xp = 3; break;
+        default:        xp = 1; break;
     }
     jogo.protagonista.xpAtual += xp;
 
@@ -134,6 +188,27 @@ void processarMorteZumbi(EstadoDoJogo& jogo, Zumbi& z) {
     // Hook para ORIG_KILLEDENEMY
     jogo.ultimaPosicaoMorte = z.posicao;
     jogo.houveMorteRecente  = true;
+
+    // EXPLOSIVO: explosão em área ao morrer
+    if (z.tipo == EXPLOSIVO) {
+        Jogador& ep = jogo.protagonista;
+        if (ep.vivo && ep.temporizadorIframe <= 0.0f) {
+            float edx = ep.posicao.x - z.posicao.x;
+            float edz = ep.posicao.z - z.posicao.z;
+            if ((edx*edx + edz*edz) <= EXPLOSAO_RAIO * EXPLOSAO_RAIO) {
+                ep.hp -= z.dano;
+                ep.temporizadorIframe = ep.duracaoIframe;
+                if (ep.hp <= 0) {
+                    ep.hp   = 0;
+                    ep.vivo = false;
+                    g_jogoTerminado = true;
+                }
+            }
+        }
+        float cR, cG, cB;
+        obterCorBaseZumbi(z.tipo, cR, cG, cB);
+        criarParticulasMorte(jogo, z.posicao, cR, cG, cB);
+    }
 
     // Verifica level-up
     while (jogo.protagonista.xpAtual >= jogo.protagonista.xpParaProximoNivel) {
@@ -349,11 +424,16 @@ static void inicializarEstadoJogo() {
     g_jogo.stand.parryBemSucedido  = false;
     g_jogo.stand.temporizadorFeedback = 0.0f;
 
+    g_jogo.stand.devorarPedido               = false;
+    g_jogo.stand.temporizadorDevorar         = 0.0f;
+    g_jogo.stand.temporizadorCooldownDevorar = 0.0f;
+
     // --- Horda / Gemas / Partículas ---
     g_jogo.horda.clear();
     g_jogo.gemas.clear();
     g_jogo.particulas.clear();
     g_jogo.numerosFlutuantes.clear();
+    g_jogo.projeteisZumbi.clear();
 
     // --- Timers ---
     g_jogo.tempoSobrevivido       = 0.0f;
@@ -400,41 +480,38 @@ static Zumbi criarZumbi(TipoZumbi tipo) {
     z.estadoAtual = WANDER;
     z.vivo        = true;
 
-    // Spawn na borda da arena
-    int lado = rand() % 4;
-    float pos = ((rand() % 2000) / 1000.0f - 1.0f) * ARENA_HALF;
-    switch (lado) {
-        case 0: z.posicao.x = -ARENA_HALF; z.posicao.y = 0.0f; z.posicao.z = pos; break;
-        case 1: z.posicao.x =  ARENA_HALF; z.posicao.y = 0.0f; z.posicao.z = pos; break;
-        case 2: z.posicao.x = pos; z.posicao.y = 0.0f; z.posicao.z = -ARENA_HALF; break;
-        default:z.posicao.x = pos; z.posicao.y = 0.0f; z.posicao.z =  ARENA_HALF; break;
+    // Spawn em anel ao redor do jogador — fora da tela, dentro da arena
+    {
+        const float PI = 3.14159265f;
+        float ang = (rand() % 360) * (PI / 180.0f);
+        float r   = SPAWN_RAIO_MIN + (rand() % 1000) * (SPAWN_RAIO_MAX - SPAWN_RAIO_MIN) / 1000.0f;
+        Jogador& jp = g_jogo.protagonista;
+        float sx = jp.posicao.x + std::cos(ang) * r;
+        float sz = jp.posicao.z + std::sin(ang) * r;
+        float lim = ARENA_HALF - 1.0f;
+        if (sx >  lim) sx =  lim;
+        if (sx < -lim) sx = -lim;
+        if (sz >  lim) sz =  lim;
+        if (sz < -lim) sz = -lim;
+        z.posicao.x = sx;
+        z.posicao.y = 0.0f;
+        z.posicao.z = sz;
     }
 
     switch (tipo) {
         case RAPIDO:
-            z.velocidade  = 5.0f; z.raioColisao = 0.4f; z.vida = 3;  break;
+            z.velocidade = 10.0f; z.raioColisao = 0.4f; z.vida = 1;  z.dano = 1; break;
         case TANK:
-            z.velocidade  =  0.8f; z.raioColisao = 0.9f; z.vida = 20; break;
+            z.velocidade =  5.0f; z.raioColisao = 0.9f; z.vida = 10; z.dano = 3; break;
         case ATIRADOR:
-            z.velocidade  =  2.0f; z.raioColisao = 0.5f; z.vida = 6;  break;
+            z.velocidade =  6.0f; z.raioColisao = 0.5f; z.vida = 2;  z.dano = 3; break;
         case EXPLOSIVO:
-            z.velocidade  =  2.0f; z.raioColisao = 0.6f; z.vida = 5;  break;
-        default:
-            z.velocidade  =  1.0f; z.raioColisao = 0.5f; z.vida = 5;  break;
+            z.velocidade = 10.0f; z.raioColisao = 0.6f; z.vida = 2;  z.dano = 3; break;
+        default: // NORMAL
+            z.velocidade = 8.0f; z.raioColisao = 0.5f; z.vida = 2;  z.dano = 1; break;
     }
+    z.tiroTimer = ATIRADOR_COOLDOWN * ((rand() % 100) / 100.0f); // offset inicial aleatório
     return z;
-}
-
-static void spawnarZumbi() {
-    TipoZumbi tipo = NORMAL;
-    int r = rand() % 100;
-    float t = g_jogo.tempoSobrevivido;
-    if (t > 120.0f && r < 10) tipo = EXPLOSIVO;
-    else if (t > 60.0f && r < 15) tipo = TANK;
-    else if (t > 30.0f && r < 20) tipo = ATIRADOR;
-    else if (r < 25) tipo = RAPIDO;
-
-    g_jogo.horda.push_back(criarZumbi(tipo));
 }
 
 // =============================================================================
@@ -449,9 +526,8 @@ static void atualizarJogador(float dt) {
         p.temporizadorIframe -= dt;
     }
 
-    float dx = 0.0f;
-    float dz = 0.0f;
-
+    // Movimentação WASD
+    float dx = 0.0f, dz = 0.0f;
     if (g_teclaW) dz -= 1.0f;
     if (g_teclaS) dz += 1.0f;
     if (g_teclaA) dx -= 1.0f;
@@ -459,66 +535,43 @@ static void atualizarJogador(float dt) {
 
     float len = std::sqrt(dx * dx + dz * dz);
     if (len > 0.0001f) {
-        dx /= len; 
-        dz /= len;
+        dx /= len; dz /= len;
+        float velFinal = p.velocidade * fatorVelocidadeDoNivel(p.upgrades.niveis[VELOCIDADE_UP]);
+        p.posicao.x += dx * velFinal * dt;
+        p.posicao.z += dz * velFinal * dt;
 
-        p.posicao.x += dx * p.velocidade * dt;
-        p.posicao.z += dz * p.velocidade * dt;
-
-        // Limite da arena corrigido para a borda visual (ARENA_HALF)
-        // Subtraímos o raio de colisão para que a borda do modelo bata na parede, não o centro
-        float limiteParede = ARENA_HALF - p.raioColisao;
-        
-        if (p.posicao.x >  limiteParede) p.posicao.x =  limiteParede;
-        if (p.posicao.x < -limiteParede) p.posicao.x = -limiteParede;
-        if (p.posicao.z >  limiteParede) p.posicao.z =  limiteParede;
-        if (p.posicao.z < -limiteParede) p.posicao.z = -limiteParede;
+        float lim = ARENA_HALF - p.raioColisao;
+        if (p.posicao.x >  lim) p.posicao.x =  lim;
+        if (p.posicao.x < -lim) p.posicao.x = -lim;
+        if (p.posicao.z >  lim) p.posicao.z =  lim;
+        if (p.posicao.z < -lim) p.posicao.z = -lim;
     }
 
-   // --- Movimento do Stand: Fixo atrás do jogador ---
-    // Removemos o cálculo com o cursor. 
-    // Usamos um offset fixo no eixo Z (ex: 1.5 unidades atrás)
-    // Se quiser que ele fique em outro lugar, altere os valores de offset.x/z
-    
-    // --- Cálculo do movimento para o Stand ---
-    // 'dx' e 'dz' já contêm a direção do movimento (-1 a 1)
-    
-    // Distância que o Stand fica do jogador
-    float distanciaStand = 1.5f;
-
-    // Se o jogador estiver parado, mantemos a última direção ou um padrão (ex: atrás no Z)
-    if (len < 0.0001f) {
-        g_jogo.stand.posicao.x = p.posicao.x;
-        g_jogo.stand.posicao.z = p.posicao.z + distanciaStand; // Padrão: atrás no eixo Z
-    } else {
-        // O Stand fica no lado oposto ao movimento
-        // dx e dz são normalizados, então o Stand sempre ficará a 1.5 de distância
-        g_jogo.stand.posicao.x = p.posicao.x - (dx * distanciaStand);
-        g_jogo.stand.posicao.z = p.posicao.z - (dz * distanciaStand);
-    }
-
-    // O Stand continua mirando no cursor, mas sua base está fixa nas costas
+    // Mira e orientação seguem o mouse; stand fica nas costas (oposto ao cursor)
     Vetor3D dirMira = obterDirecaoNormalizada(p.posicao, g_posicaoCursor);
+    const float distanciaStand = 1.5f;
+    g_jogo.stand.posicao.x = p.posicao.x - dirMira.x * distanciaStand;
+    g_jogo.stand.posicao.z = p.posicao.z - dirMira.z * distanciaStand;
     g_jogo.stand.anguloMira = std::atan2(dirMira.z, dirMira.x);
 
 // --- Controle de Sobrecarga e Resfriamento de Tensão ---
-   int nivelEficiencia = g_jogo.protagonista.upgrades.niveis[TENSAO_UP];
-    float multiplicador = 1.0f + 0.30f * (float)nivelEficiencia;
+    float maxTensao      = maxTensaoDoNivel(g_jogo.protagonista.upgrades.niveis[TENSAO_UP]);
+    float taxaDecaimento = taxaDecaimentoTensaoDoNivel(g_jogo.protagonista.upgrades.niveis[TENSAO_UP]);
 
     if (g_jogo.stand.emSobrecarga) {
-        g_jogo.stand.tensaoAtual -= (20.0f * multiplicador) * dt; 
+        g_jogo.stand.tensaoAtual -= (taxaDecaimento * (4.0f / 3.0f)) * dt;
         if (g_jogo.stand.tensaoAtual <= 0.0f) {
             g_jogo.stand.tensaoAtual  = 0.0f;
             g_jogo.stand.emSobrecarga = false;
         }
     } else {
-        if (g_jogo.stand.tensaoAtual >= 100.0f) {
+        if (g_jogo.stand.tensaoAtual >= maxTensao) {
             g_jogo.stand.emSobrecarga = true;
-            g_jogo.stand.tensaoAtual  = 100.0f;
-        } 
+            g_jogo.stand.tensaoAtual  = maxTensao;
+        }
         else if (!g_cliqueMouse) {
             // Esvazia a barra continuamente quando o botão não está pressionado
-            g_jogo.stand.tensaoAtual -= (15.0f * multiplicador) * dt; 
+            g_jogo.stand.tensaoAtual -= taxaDecaimento * dt;
             if (g_jogo.stand.tensaoAtual < 0.0f) {
                 g_jogo.stand.tensaoAtual = 0.0f;
             }
@@ -536,18 +589,44 @@ static void atualizarJogador(float dt) {
         if (s_cooldownDisparo <= 0.0f) {
             g_skills.executar(g_jogo, g_posicaoCursor);
             
-            // Cooldown do clique manual afetado pela velocidade da cadência
-            float baseCooldown = 0.3f;
+            // Cooldown do clique manual afetado pela velocidade da cadência.
+            // ARQ_ESPINGARDA_TATICA seta cooldownManual > 0 para impor base ×4 mais lento.
+            float baseCooldown = 0.50f;
+            {
+                const SlotSkill& slot0 = g_skills.slot(0);
+                if (slot0.ativo && slot0.build.cooldownManual > 0.0f)
+                    baseCooldown = slot0.build.cooldownManual;
+            }
             int nivelCadencia  = g_jogo.protagonista.upgrades.niveis[CADENCIA];
-            float fator = 1.0f - 0.20f * (float)nivelCadencia;
-            if (fator < 0.1f) fator = 0.1f;
-            
-            s_cooldownDisparo = baseCooldown * fator;  
+            s_cooldownDisparo  = baseCooldown * fatorCadenciaDoNivel(nivelCadencia);  
         }
     } else {
         // A flag atirandoAgora só deve ser falsa quando o jogador não estiver clicando
         // ou estiver em sobrecarga/pausa.
         g_jogo.atirandoAgora = false;
+    }
+
+    // --- Animação da Sofia ---------------------------------------------------
+    if (g_sofiaCarregada) {
+        bool movendo = (g_teclaW || g_teclaS || g_teclaA || g_teclaD);
+        if (movendo) {
+            // Direção normalizada do input
+            float idx = 0.0f, idz = 0.0f;
+            if (g_teclaW) idz -= 1.0f;
+            if (g_teclaS) idz += 1.0f;
+            if (g_teclaA) idx -= 1.0f;
+            if (g_teclaD) idx += 1.0f;
+            float ilen = std::sqrt(idx*idx + idz*idz);
+            if (ilen > 0.0001f) { idx /= ilen; idz /= ilen; }
+            // Componente na direção de mira: positivo=frente, negativo=costas
+            float ang  = g_jogo.stand.anguloMira;
+            float dotFwd = idx * std::cos(ang) + idz * std::sin(ang);
+            g_sofia.definirVelocidade(dotFwd >= 0.0f ? 1.0f : -1.0f);
+        } else {
+            // CORREÇÃO: Congela exatamente no frame 1 quando o jogador parar
+            g_sofia.congelarNoFrame(14); 
+        }
+        g_sofia.atualizar(dt);
     }
 }
 
@@ -562,10 +641,40 @@ static void atualizarZumbis(float dt) {
         Zumbi& z = g_jogo.horda[i];
         if (!z.vivo) continue;
 
-        // Sempre persegue o jogador (IA CHASE)
-        Vetor3D dir = obterDirecaoNormalizada(z.posicao, p.posicao);
-        z.posicao.x += dir.x * z.velocidade * dt;
-        z.posicao.z += dir.z * z.velocidade * dt;
+        float dx   = p.posicao.x - z.posicao.x;
+        float dz   = p.posicao.z - z.posicao.z;
+        float dist = std::sqrt(dx * dx + dz * dz);
+        float nx   = (dist > 0.001f) ? dx / dist : 0.0f;
+        float nz   = (dist > 0.001f) ? dz / dist : 0.0f;
+
+        if (z.tipo == ATIRADOR) {
+            // Mantém distância preferida: aproxima se longe, recua se perto
+            if (dist > ATIRADOR_DIST * 1.3f) {
+                z.posicao.x += nx * z.velocidade * dt;
+                z.posicao.z += nz * z.velocidade * dt;
+            } else if (dist < ATIRADOR_DIST * 0.7f) {
+                z.posicao.x -= nx * z.velocidade * dt;
+                z.posicao.z -= nz * z.velocidade * dt;
+            }
+            // Dispara periodicamente
+            z.tiroTimer -= dt;
+            if (z.tiroTimer <= 0.0f) {
+                z.tiroTimer = ATIRADOR_COOLDOWN;
+                ProjetilZumbi pz;
+                pz.posicao    = z.posicao;
+                pz.direcao.x  = (dist > 0.001f) ? nx : 1.0f;
+                pz.direcao.y  = 0.0f;
+                pz.direcao.z  = (dist > 0.001f) ? nz : 0.0f;
+                pz.velocidade = PROJETIL_ZUMBI_VEL;
+                pz.dano       = PROJETIL_ZUMBI_DANO;
+                pz.ativo      = true;
+                g_jogo.projeteisZumbi.push_back(pz);
+            }
+        } else {
+            // NORMAL, RAPIDO, TANK, EXPLOSIVO: perseguição direta
+            z.posicao.x += nx * z.velocidade * dt;
+            z.posicao.z += nz * z.velocidade * dt;
+        }
 
         // Limites da arena
         if (z.posicao.x >  ARENA_HALF) z.posicao.x =  ARENA_HALF;
@@ -586,7 +695,7 @@ void processarColisaoZumbiJogador_Grade(EstadoDoJogo& jogo,
         Zumbi& z = jogo.horda[i];
         if (!z.vivo) continue;
         if (verificarColisao(p.posicao, p.raioColisao, z.posicao, z.raioColisao)) {
-            p.hp--;
+            p.hp -= z.dano;
             p.temporizadorIframe = p.duracaoIframe;
             if (p.hp <= 0) {
                 p.hp   = 0;
@@ -626,36 +735,179 @@ static void atualizarFloatingDamage(float dt) {
     }
 }
 
+static void atualizarProjeteisZumbi(float dt) {
+    Jogador& p = g_jogo.protagonista;
+    for (size_t i = 0; i < g_jogo.projeteisZumbi.size(); ++i) {
+        ProjetilZumbi& pz = g_jogo.projeteisZumbi[i];
+        if (!pz.ativo) continue;
+
+        pz.posicao.x += pz.direcao.x * pz.velocidade * dt;
+        pz.posicao.z += pz.direcao.z * pz.velocidade * dt;
+
+        if (std::abs(pz.posicao.x) > ARENA_HALF || std::abs(pz.posicao.z) > ARENA_HALF) {
+            pz.ativo = false;
+            continue;
+        }
+
+        if (p.vivo && p.temporizadorIframe <= 0.0f) {
+            float cdx = pz.posicao.x - p.posicao.x;
+            float cdz = pz.posicao.z - p.posicao.z;
+            float r   = p.raioColisao + 0.2f;
+            if ((cdx*cdx + cdz*cdz) <= r * r) {
+                pz.ativo = false;
+                p.hp -= pz.dano;
+                p.temporizadorIframe = p.duracaoIframe;
+                if (p.hp <= 0) {
+                    p.hp   = 0;
+                    p.vivo = false;
+                    g_jogoTerminado = true;
+                }
+            }
+        }
+    }
+}
+
 // =============================================================================
 //  SPAWN PERIÓDICO DE ZUMBIS
 // =============================================================================
+
+// Multiplicador de spawn para um tipo de zumbi no tempo t.
+// Dobra a cada minuto desde o desbloqueio; 0 = ainda não aparece.
+static int multiplicadorSpawn(TipoZumbi tipo, float t) {
+    float desbloqueio = 0.0f;
+    switch (tipo) {
+        case NORMAL:    desbloqueio =   0.0f; break;
+        case RAPIDO:    desbloqueio =  60.0f; break;
+        case TANK:      desbloqueio = 120.0f; break;
+        case ATIRADOR:  desbloqueio = 180.0f; break;
+        case EXPLOSIVO: desbloqueio = 180.0f; break;
+        default:        desbloqueio =   0.0f; break;
+    }
+    if (t < desbloqueio) return 0;
+    int minutos = (int)((t - desbloqueio) / 60.0f);
+    int mult = 1;
+    for (int i = 0; i < minutos; ++i) {
+        mult *= 2;
+        if (mult >= SPAWN_MULT_MAX) { mult = SPAWN_MULT_MAX; break; }
+    }
+    return mult;
+}
 
 static void atualizarSpawn(float dt) {
     if (g_jogo.jogoPausado) return;
 
     g_jogo.tempoSobrevivido += dt;
     g_jogo.tempoUltimoSpawn += dt;
+    if (g_jogo.tempoUltimoSpawn < SPAWN_INTERVALO) return;
+    g_jogo.tempoUltimoSpawn = 0.0f;
 
-    // Reduzimos o cooldown base de 2.5s para 1.0s. 
-    // O decréscimo foi suavizado para o jogo não ficar impossível rápido demais.
-    float cooldown = 1.0f - g_jogo.tempoSobrevivido * 0.002f;
-    
-    // Novo limite mínimo de cooldown (0.2s em vez de 0.5s) para o late game
-    if (cooldown < 0.2f) cooldown = 0.2f;
+    const TipoZumbi tipos[5] = { NORMAL, RAPIDO, TANK, ATIRADOR, EXPLOSIVO };
+    float t = g_jogo.tempoSobrevivido;
 
-    if (g_jogo.tempoUltimoSpawn >= cooldown) {
-        g_jogo.tempoUltimoSpawn = 0.0f;
-        
-        // Aumentamos a base de 1 para 3 zumbis por ciclo inicial.
-        // A taxa de crescimento agora adiciona 1 zumbi extra a cada 20 segundos.
-        int n = 3 + (int)(g_jogo.tempoSobrevivido / 20.0f);
-        
-        // O limite máximo de zumbis por ciclo de spawn subiu de 5 para 12
-        if (n > 12) n = 12; 
-        
+    for (int ti = 0; ti < 5; ++ti) {
+        int mult = multiplicadorSpawn(tipos[ti], t);
+        if (mult == 0) continue;
+        int n = SPAWN_BASE * mult;
         for (int i = 0; i < n; ++i) {
-            spawnarZumbi();
+            if ((int)g_jogo.horda.size() >= HORDA_MAX) break;
+            g_jogo.horda.push_back(criarZumbi(tipos[ti]));
         }
+        if ((int)g_jogo.horda.size() >= HORDA_MAX) break;
+    }
+}
+
+// =============================================================================
+//  ATUALIZAÇÃO: DEVORAR (corpo a corpo alto-risco/alta-recompensa, ESPAÇO)
+// =============================================================================
+
+static void atualizarDevorar(EstadoDoJogo& jogo, float dt) {
+    Entidade& stand = jogo.stand;
+    Jogador&  p     = jogo.protagonista;
+
+    // -- Cooldown entre usos
+    if (stand.temporizadorCooldownDevorar > 0.0f) {
+        stand.temporizadorCooldownDevorar -= dt;
+        if (stand.temporizadorCooldownDevorar < 0.0f)
+            stand.temporizadorCooldownDevorar = 0.0f;
+    }
+
+    // -- Ativação pelo teclado (pedido registrado em cbKeyboard)
+    if (stand.devorarPedido) {
+        stand.devorarPedido = false;
+        if (stand.temporizadorDevorar <= 0.0f &&
+            stand.temporizadorCooldownDevorar <= 0.0f &&
+            !stand.emSobrecarga) {
+            stand.temporizadorDevorar         = DEVORAR_DURACAO_JANELA;
+            stand.temporizadorCooldownDevorar = DEVORAR_COOLDOWN;
+            if (DEVORAR_LUNGE > 0.0f) {
+                p.posicao.x += std::cos(stand.anguloMira) * DEVORAR_LUNGE;
+                p.posicao.z += std::sin(stand.anguloMira) * DEVORAR_LUNGE;
+            }
+        }
+    }
+
+    // -- Janela inativa: nada a fazer
+    if (stand.temporizadorDevorar <= 0.0f) return;
+
+    stand.temporizadorDevorar -= dt;
+    bool janelaExpirou = (stand.temporizadorDevorar <= 0.0f);
+    if (janelaExpirou) stand.temporizadorDevorar = 0.0f;
+
+    // -- Procura o alvo mais próximo dentro do setor frontal (zumbi ou projétil)
+    const float PI         = 3.14159265f;
+    float meiaAb           = DEVORAR_ANGULO * 0.5f;
+    Zumbi*        alvoZ    = NULL;
+    ProjetilZumbi* alvoP   = NULL;
+    float  menorDist       = DEVORAR_ALCANCE * 2.0f;
+
+    for (size_t i = 0; i < jogo.horda.size(); ++i) {
+        Zumbi& z = jogo.horda[i];
+        if (!z.vivo) continue;
+        float dx   = z.posicao.x - p.posicao.x;
+        float dz   = z.posicao.z - p.posicao.z;
+        float dist = std::sqrt(dx * dx + dz * dz);
+        if (dist > DEVORAR_ALCANCE) continue;
+        float angZ = std::atan2(dz, dx);
+        float diff = angZ - stand.anguloMira;
+        while (diff >  PI) diff -= 2.0f * PI;
+        while (diff < -PI) diff += 2.0f * PI;
+        if (diff < -meiaAb || diff > meiaAb) continue;
+        if (dist < menorDist) { menorDist = dist; alvoZ = &z; alvoP = NULL; }
+    }
+
+    // Projéteis do Atirador também são devoráveis
+    for (size_t i = 0; i < jogo.projeteisZumbi.size(); ++i) {
+        ProjetilZumbi& pz = jogo.projeteisZumbi[i];
+        if (!pz.ativo) continue;
+        float dx   = pz.posicao.x - p.posicao.x;
+        float dz   = pz.posicao.z - p.posicao.z;
+        float dist = std::sqrt(dx * dx + dz * dz);
+        if (dist > DEVORAR_ALCANCE) continue;
+        float angZ = std::atan2(dz, dx);
+        float diff = angZ - stand.anguloMira;
+        while (diff >  PI) diff -= 2.0f * PI;
+        while (diff < -PI) diff += 2.0f * PI;
+        if (diff < -meiaAb || diff > meiaAb) continue;
+        if (dist < menorDist) { menorDist = dist; alvoP = &pz; alvoZ = NULL; }
+    }
+
+    if (alvoZ != NULL) {
+        // SUCESSO (zumbi): morte instantânea + purga tensão
+        processarMorteZumbi(jogo, *alvoZ);
+        stand.tensaoAtual = 0.0f;
+        if (DEVORAR_SUCESSO_LIMPA_SOBRECARGA) stand.emSobrecarga = false;
+        stand.temporizadorDevorar = 0.0f;
+    } else if (alvoP != NULL) {
+        // SUCESSO (projétil): destrói o projétil + purga tensão
+        alvoP->ativo = false;
+        stand.tensaoAtual = 0.0f;
+        if (DEVORAR_SUCESSO_LIMPA_SOBRECARGA) stand.emSobrecarga = false;
+        stand.temporizadorDevorar = 0.0f;
+    } else if (janelaExpirou) {
+        // ERRO: janela expirou sem acerto → sobrecarga imediata
+        float maxT = maxTensaoDoNivel(jogo.protagonista.upgrades.niveis[TENSAO_UP]);
+        stand.tensaoAtual  = maxT;
+        stand.emSobrecarga = true;
     }
 }
 
@@ -667,7 +919,7 @@ static void atualizarSpawn(float dt) {
 static void configurarCamera() {
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-    gluPerspective(45.0, (double)JANELA_W / JANELA_H, 0.5, 600.0);
+    gluPerspective(45.0, (double)g_winW / (double)g_winH, 0.5, 600.0);
 
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
@@ -722,18 +974,56 @@ static void desenharChao() {
     glEnd();
 }
 
-// Jogador (cubo branco-azulado)
+// Jogador — modelo animado da Sofia (fallback: cubo branco-azulado)
 static void desenharJogador() {
     Jogador& p = g_jogo.protagonista;
     if (!p.vivo) return;
-    float flash = (p.temporizadorIframe > 0.0f) ? 0.5f : 1.0f;
-    desenharBloco3D(p.posicao.x, 0.0f, p.posicao.z,
-                    0.8f, 0.8f, 1.2f,
-                    0.9f*flash, 0.9f*flash, 1.0f*flash,
-                    0.7f*flash, 0.7f*flash, 0.9f*flash,
-                    0.5f*flash, 0.5f*flash, 0.7f*flash,
-                    0.8f*flash, 0.8f*flash, 1.0f*flash,
-                    0.6f*flash, 0.6f*flash, 0.8f*flash);
+
+    if (!g_sofiaCarregada) {
+        float flash = (p.temporizadorIframe > 0.0f) ? 0.5f : 1.0f;
+        desenharBloco3D(p.posicao.x, 0.0f, p.posicao.z,
+                        0.8f, 0.8f, 1.2f,
+                        0.9f*flash, 0.9f*flash, 1.0f*flash,
+                        0.7f*flash, 0.7f*flash, 0.9f*flash,
+                        0.5f*flash, 0.5f*flash, 0.7f*flash,
+                        0.8f*flash, 0.8f*flash, 1.0f*flash,
+                        0.6f*flash, 0.6f*flash, 0.8f*flash);
+        return;
+    }
+
+    // Pisca durante i-frames
+    if (p.temporizadorIframe > 0.0f) {
+        int ciclo = (int)(p.temporizadorIframe * 10.0f);
+        if (ciclo % 2 == 0) return;
+    }
+
+    glPushMatrix();
+    
+    // CORREÇÃO 1: Levanta a Sofia no eixo Y para não ficar enterrada
+    glTranslatef(p.posicao.x, SOFIA_Y_OFFSET, p.posicao.z);
+
+    float angGraus = g_jogo.stand.anguloMira * (180.0f / 3.14159265f);
+    
+    // CORREÇÃO 2: Sinal negativo em -angGraus conserta o espelhamento Cima/Baixo
+    glRotatef(-angGraus + SOFIA_ROT_OFFSET, 0.0f, 1.0f, 0.0f);
+    
+    glRotatef(90.0f, 1.0f, 0.0f, 0.0f); // Blender exporta Z-up; corrige para Y-up
+    glScalef(SOFIA_ESCALA, SOFIA_ESCALA, SOFIA_ESCALA);
+
+    // Iluminação mínima para o modelo texturizado
+    glEnable(GL_LIGHTING);
+    GLfloat lpos[4] = { 0.0f, 20.0f,  5.0f, 1.0f };
+    GLfloat lamb[4] = { 0.5f,  0.5f,  0.5f, 1.0f };
+    GLfloat ldif[4] = { 1.0f,  1.0f,  1.0f, 1.0f };
+    glLightfv(GL_LIGHT0, GL_POSITION, lpos);
+    glLightfv(GL_LIGHT0, GL_AMBIENT,  lamb);
+    glLightfv(GL_LIGHT0, GL_DIFFUSE,  ldif);
+    glEnable(GL_LIGHT0);
+
+    g_sofia.renderizar();
+
+    glDisable(GL_LIGHTING);
+    glPopMatrix();
 }
 
 // Stand (cubo dourado menor)
@@ -767,16 +1057,6 @@ static void desenharZumbis() {
     }
 }
 
-// Gemas de XP
-static void desenharGemas() {
-    for (size_t i = 0; i < g_jogo.gemas.size(); ++i) {
-        const GemaXP& g = g_jogo.gemas[i];
-        if (g.coletada) continue;
-        desenharCirculo3D(g.posicao.x, 0.05f, g.posicao.z, 0.25f,
-                          0.1f, 0.9f, 0.5f);
-    }
-}
-
 // Partículas
 static void desenharParticulas() {
     glPointSize(4.0f);
@@ -791,6 +1071,50 @@ static void desenharParticulas() {
     }
     glEnd();
     glDisable(GL_BLEND);
+}
+
+// Contorno do setor de Devorar — geometria idêntica à detecção (honesto com a hitbox)
+static void desenharHitboxDevorar() {
+    if (!g_jogo.protagonista.vivo) return;
+
+    Entidade& stand  = g_jogo.stand;
+    Jogador&  p      = g_jogo.protagonista;
+    bool janelaAtiva = (stand.temporizadorDevorar > 0.0f);
+
+    const int SEG = 16;
+    float meiaAb  = DEVORAR_ANGULO * 0.5f;
+    float angIni  = stand.anguloMira - meiaAb;
+    float angFim  = stand.anguloMira + meiaAb;
+    float cx = p.posicao.x, cz = p.posicao.z, y = 0.05f;
+
+    if (!janelaAtiva) return;  // só desenha enquanto a janela está ativa
+
+    glDisable(GL_LIGHTING);
+    glColor3f(1.0f, 0.10f, 0.05f);
+    glLineWidth(2.5f);
+
+    // GL_LINE_LOOP: centro → arco → fecha automaticamente (os dois raios + arco)
+    glBegin(GL_LINE_LOOP);
+        glVertex3f(cx, y, cz);
+        for (int i = 0; i <= SEG; ++i) {
+            float ang = angIni + (angFim - angIni) * (float)i / (float)SEG;
+            glVertex3f(cx + std::cos(ang) * DEVORAR_ALCANCE, y,
+                       cz + std::sin(ang) * DEVORAR_ALCANCE);
+        }
+    glEnd();
+
+    glLineWidth(1.5f);  // restaura espessura padrão do jogo
+}
+
+// Projéteis do Atirador (círculo laranja pequeno no plano XZ)
+static void desenharProjeteisZumbi() {
+    glDisable(GL_LIGHTING);
+    for (size_t i = 0; i < g_jogo.projeteisZumbi.size(); ++i) {
+        const ProjetilZumbi& pz = g_jogo.projeteisZumbi[i];
+        if (!pz.ativo) continue;
+        desenharCirculo3D(pz.posicao.x, 0.1f, pz.posicao.z, 0.3f,
+                          1.0f, 0.55f, 0.0f);
+    }
 }
 
 // Skills (todos os slots)
@@ -810,11 +1134,13 @@ static void desenharCena() {
 
     configurarCamera();
 
-    desenharChao();
-    desenharGemas();
+    desenharMapaBalada();
+    glDisable(GL_LIGHTING);   // mapa usa lighting; o resto do jogo usa glColor3f direto
     desenharZumbis();
+    desenharProjeteisZumbi();
     desenharSkills();
     desenharParticulas();
+    desenharHitboxDevorar();
     desenharJogador();
     desenharStand();
 }
@@ -828,7 +1154,7 @@ static void entrarModo2D() {
     glMatrixMode(GL_PROJECTION);
     glPushMatrix();
     glLoadIdentity();
-    gluOrtho2D(0.0, JANELA_W, 0.0, JANELA_H);
+    gluOrtho2D(0.0, (double)g_winW, 0.0, (double)g_winH);
     glMatrixMode(GL_MODELVIEW);
     glPushMatrix();
     glLoadIdentity();
@@ -875,36 +1201,59 @@ static void desenharHUD() {
 
     Jogador& p = g_jogo.protagonista;
 
+    const float W = (float)g_winW, H = (float)g_winH;
+
     // Barra de HP
-    desenharBarra(10.0f, JANELA_H - 30.0f, 200.0f, 18.0f,
+    desenharBarra(10.0f, H - 30.0f, 200.0f, 18.0f,
                   (float)p.hp, (float)p.hpMaximo,
                   0.9f, 0.1f, 0.1f,   0.3f, 0.0f, 0.0f);
     char buf[64];
     std::snprintf(buf, sizeof(buf), "HP %d/%d", p.hp, p.hpMaximo);
-    desenharTexto(12.0f, JANELA_H - 27.0f, buf, 1.0f, 1.0f, 1.0f);
+    desenharTexto(12.0f, H - 27.0f, buf, 1.0f, 1.0f, 1.0f);
 
     // Barra de Tensão
-    desenharBarra(10.0f, JANELA_H - 60.0f, 200.0f, 18.0f,
-                  g_jogo.stand.tensaoAtual, 100.0f,
+    desenharBarra(10.0f, H - 60.0f, 200.0f, 18.0f,
+                  g_jogo.stand.tensaoAtual, maxTensaoDoNivel(g_jogo.protagonista.upgrades.niveis[TENSAO_UP]),
                   g_jogo.stand.emSobrecarga ? 1.0f : 0.3f,
                   g_jogo.stand.emSobrecarga ? 0.3f : 0.5f,
                   0.0f,
                   0.1f, 0.1f, 0.3f);
     std::snprintf(buf, sizeof(buf), "Tensão %.0f%%",
                   g_jogo.stand.tensaoAtual);
-    desenharTexto(12.0f, JANELA_H - 57.0f, buf, 1.0f, 1.0f, 1.0f);
+    desenharTexto(12.0f, H - 57.0f, buf, 1.0f, 1.0f, 1.0f);
 
     // Barra de XP
-    desenharBarra(10.0f, JANELA_H - 90.0f, 200.0f, 12.0f,
+    desenharBarra(10.0f, H - 90.0f, 200.0f, 12.0f,
                   (float)p.xpAtual, (float)p.xpParaProximoNivel,
                   0.2f, 0.8f, 1.0f,   0.05f, 0.1f, 0.2f);
     std::snprintf(buf, sizeof(buf), "Nv %d  XP %d/%d",
                   p.nivel, p.xpAtual, p.xpParaProximoNivel);
-    desenharTexto(12.0f, JANELA_H - 88.0f, buf, 0.7f, 0.9f, 1.0f);
+    desenharTexto(12.0f, H - 88.0f, buf, 0.7f, 0.9f, 1.0f);
 
-    // Tempo
-    std::snprintf(buf, sizeof(buf), "%.1fs", g_jogo.tempoSobrevivido);
-    desenharTexto(JANELA_W - 80.0f, JANELA_H - 28.0f, buf, 0.8f, 0.8f, 0.8f);
+    // Status do Devorar
+    {
+        Entidade& st = g_jogo.stand;
+        if (st.temporizadorDevorar > 0.0f) {
+            desenharTexto(10.0f, H - 120.0f, "DEVORANDO!", 1.0f, 0.15f, 0.0f);
+        } else if (st.temporizadorCooldownDevorar > 0.0f) {
+            std::snprintf(buf, sizeof(buf), "Devorar [recarga %.1fs]",
+                          st.temporizadorCooldownDevorar);
+            desenharTexto(10.0f, H - 120.0f, buf, 0.55f, 0.40f, 0.40f);
+        } else {
+            desenharTexto(10.0f, H - 120.0f, "ESPACO: Devorar [Pronto]", 0.85f, 0.85f, 0.85f);
+        }
+    }
+
+    // Temporizador (MM:SS) — canto superior direito
+    int t_total = (int)g_jogo.tempoSobrevivido;
+    int t_min   = t_total / 60;
+    int t_sec   = t_total % 60;
+    std::snprintf(buf, sizeof(buf), "%02d:%02d", t_min, t_sec);
+    desenharTexto(W - 70.0f, H - 20.0f, buf, 1.0f, 1.0f, 0.6f);
+
+    // Contador de kills — abaixo do timer
+    std::snprintf(buf, sizeof(buf), "Kills: %d", g_kills);
+    desenharTexto(W - 80.0f, H - 45.0f, buf, 1.0f, 0.5f, 0.5f);
 
     // Skills equipadas (slots)
     float sx = 10.0f, sy = 10.0f;
@@ -919,13 +1268,13 @@ static void desenharHUD() {
 
     // Sobrecarga
     if (g_jogo.stand.emSobrecarga) {
-        desenharTexto(JANELA_W * 0.5f - 80.0f, JANELA_H * 0.5f + 60.0f,
+        desenharTexto(W * 0.5f - 80.0f, H * 0.5f + 60.0f,
                       "SOBRECARGA!", 1.0f, 0.2f, 0.0f);
     }
 
     // Game Over
     if (g_jogoTerminado) {
-        desenharTexto(JANELA_W * 0.5f - 80.0f, JANELA_H * 0.5f,
+        desenharTexto(W * 0.5f - 80.0f, H * 0.5f,
                       "GAME OVER — [R] Reiniciar", 1.0f, 0.2f, 0.2f);
     }
 
@@ -944,21 +1293,22 @@ static void desenharMenuLevelUp() {
     // Fundo semi-transparente
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    const float W = (float)g_winW, H = (float)g_winH;
     glColor4f(0.0f, 0.0f, 0.0f, 0.65f);
     glBegin(GL_QUADS);
-        glVertex2f(0, 0); glVertex2f(JANELA_W, 0);
-        glVertex2f(JANELA_W, JANELA_H); glVertex2f(0, JANELA_H);
+        glVertex2f(0, 0); glVertex2f(W, 0);
+        glVertex2f(W, H); glVertex2f(0, H);
     glEnd();
     glDisable(GL_BLEND);
 
-    desenharTexto(JANELA_W * 0.5f - 80.0f, JANELA_H - 120.0f,
+    desenharTexto(W * 0.5f - 80.0f, H - 120.0f,
                   "LEVEL UP! Escolha uma melhoria:", 1.0f, 0.9f, 0.2f);
 
     MenuLevelUp& menu = g_jogo.menuAtual;
     float cardW = 260.0f, cardH = 100.0f;
     float totalW = menu.quantidade * cardW + (menu.quantidade - 1) * 20.0f;
-    float startX = (JANELA_W - totalW) * 0.5f;
-    float startY = JANELA_H * 0.5f - cardH * 0.5f;
+    float startX = (W - totalW) * 0.5f;
+    float startY = H * 0.5f - cardH * 0.5f;
 
     for (int i = 0; i < menu.quantidade; ++i) {
         LevelUpChoice& c = menu.escolhas[i];
@@ -1045,7 +1395,10 @@ static void cbIdle() {
 
     if (!g_jogo.jogoPausado && !g_jogoTerminado) {
         atualizarJogador(dt);
+        atualizarDevorar(g_jogo, dt);
         atualizarZumbis(dt);
+        atualizarProjeteisZumbi(dt);
+        processarColisoesCenario(g_jogo);
         g_skills.atualizarTodos(g_jogo, g_grade, dt);
         atualizarParticulas(dt);
         atualizarFloatingDamage(dt);
@@ -1084,6 +1437,7 @@ static void cbKeyboard(unsigned char key, int /*x*/, int /*y*/) {
         case 'r': case 'R':
             if (g_jogoTerminado) {
                 g_jogoTerminado = false;
+                g_kills = 0;
                 g_skills.limparTodos();
                 inicializarEstadoJogo();
             }
@@ -1106,6 +1460,22 @@ static void cbKeyboard(unsigned char key, int /*x*/, int /*y*/) {
             }
             break;
         }
+
+        // Música secreta (Tecla 0)
+        case '0':
+            if (!g_musicaSecreta) {
+                g_musicaSecreta = true;
+                tocarMusicaFundo("Sons/festa_zumbi.mp3"); // Caminho atualizado!
+            } else {
+                g_musicaSecreta = false;
+                tocarMusicaFundo("Sons/musica_balada.mp3"); // Caminho atualizado!
+            }
+            break;
+
+        // Devorar (ESPAÇO) — só registra o pedido; resolução é em atualizarDevorar()
+        case ' ':
+            g_jogo.stand.devorarPedido = true;
+            break;
 
         // Parry (tecla Q)
         case 'q': case 'Q':
@@ -1133,6 +1503,8 @@ static void cbKeyboardUp(unsigned char key, int /*x*/, int /*y*/) {
 }
 
 static void cbReshape(int w, int h) {
+    g_winW = w;
+    g_winH = h;
     glViewport(0, 0, w, h);
 }
 
@@ -1165,6 +1537,19 @@ int main(int argc, char** argv) {
     glutInitWindowSize(JANELA_W, JANELA_H);
     glutCreateWindow("Stand — Fase 6.5");
 
+    // 1.5. Carrega o modelo da Sofia (precisa de contexto OpenGL ativo)
+    g_sofiaCarregada = g_sofia.carregar("Sofia.glb");
+    if (g_sofiaCarregada) {
+        g_sofia.definirTexturaManual("Sofia.png");
+        g_sofia.configurarRootMotion(true, "mixamorig:Hips");
+        // Toca a primeira animação encontrada no modelo
+        const std::map<std::string,int>& anims = g_sofia.animacoesDisponiveis();
+        if (!anims.empty()) {
+            g_sofia.tocarAnimacao(anims.begin()->first, true);
+            g_sofia.congelarNoFrame(14); // Começa parada no frame 1
+        }
+    }
+
     // 2. Catálogo de skills
     registrarSkillsPadrao();
     registrarArmasInteligentes();   // 3 armas inteligentes (builds por nível)
@@ -1186,6 +1571,11 @@ int main(int argc, char** argv) {
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_LINE_SMOOTH);
     glLineWidth(1.5f);
+
+    g_ultimoTempo = glutGet(GLUT_ELAPSED_TIME) / 1000.0f;
+
+    // 6. Áudio
+    tocarMusicaFundo("Sons/musica_balada.mp3"); // Caminho atualizado!
 
     g_ultimoTempo = glutGet(GLUT_ELAPSED_TIME) / 1000.0f;
 

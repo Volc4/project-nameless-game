@@ -68,18 +68,29 @@ inline void desenharSkill(const SkillData& s, const RuntimeSkill& r) {
         case FORMA_CONE:
         case FORMA_RING:
         case FORMA_PRISM: {
-                // Como o raio base é 0.25, multiplicá-lo por 0.8 faz com que o tamanho 
-                // visual inicie exatamente no seu tamanho clássico de 0.20f.
-                // Quando o dano subir, o raioColisao sobe, e o tamanhoDaBala cresce junto!
-                float tamanhoDaBala = r.raioColisao * 0.8f; 
-                
-                desenharBloco3D(r.posicao.x, BASE_Y, r.posicao.z,
-                                tamanhoDaBala, tamanhoDaBala, tamanhoDaBala,
-                                1.0f, 1.0f, 0.20f,
-                                0.80f, 0.80f, 0.0f,
-                                0.55f, 0.55f, 0.0f,
-                                0.90f, 0.90f, 0.05f,
-                                0.65f, 0.65f, 0.0f);
+                float tam = r.raioColisao * 0.8f;
+                // Cor custom se qualquer canal for não-nulo; senão amarelo padrão.
+                bool temCor = (s.forma.corR > 0.001f ||
+                               s.forma.corG > 0.001f ||
+                               s.forma.corB > 0.001f);
+                if (temCor) {
+                    float cr = s.forma.corR, cg = s.forma.corG, cb = s.forma.corB;
+                    desenharBloco3D(r.posicao.x, BASE_Y, r.posicao.z,
+                                    tam, tam, tam,
+                                    cr,        cg,        cb,
+                                    cr*0.80f,  cg*0.80f,  cb*0.80f,
+                                    cr*0.55f,  cg*0.55f,  cb*0.55f,
+                                    cr*0.90f,  cg*0.90f,  cb*0.90f,
+                                    cr*0.65f,  cg*0.65f,  cb*0.65f);
+                } else {
+                    desenharBloco3D(r.posicao.x, BASE_Y, r.posicao.z,
+                                    tam, tam, tam,
+                                    1.0f, 1.0f, 0.20f,
+                                    0.80f, 0.80f, 0.0f,
+                                    0.55f, 0.55f, 0.0f,
+                                    0.90f, 0.90f, 0.05f,
+                                    0.65f, 0.65f, 0.0f);
+                }
                 break;
             }
         case FORMA_BEAM:

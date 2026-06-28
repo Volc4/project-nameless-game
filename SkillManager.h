@@ -185,8 +185,8 @@ struct SkillManager {
             _spawnarInstancias(sl, jogo, posicaoAlvo);
 
             jogo.stand.tensaoAtual += sl.build.custoTensao;
-            if (jogo.stand.tensaoAtual > 100.0f)
-                jogo.stand.tensaoAtual = 100.0f;
+            if (jogo.stand.tensaoAtual > maxTensaoDoNivel(jogo.protagonista.upgrades.niveis[TENSAO_UP]))
+                jogo.stand.tensaoAtual = maxTensaoDoNivel(jogo.protagonista.upgrades.niveis[TENSAO_UP]);
         }
     }
 
@@ -266,16 +266,14 @@ private:
         Vetor3D origem     = jogo.stand.posicao;   // ORIG_STAND padrão
         Vetor3D dirBase    = obterDirecaoNormalizada(origem, alvo);
 
-        int n = 1;
-        if (s.forma.tipo == FORMA_CONE || s.forma.tipo == FORMA_RING)
-            n = (s.forma.quantidade > 0 ? s.forma.quantidade : 1);
+        int n = (s.forma.quantidade > 0 ? s.forma.quantidade : 1);
 
         if (n == 1) {
             _empurrarInstancia(sl, jogo, s, origem, dirBase);
             return;
         }
 
-        // Distribuição em leque simétrico (Cone) ou radial (Ring)
+        // Distribuição em leque simétrico para PROJECTILE/CONE ou radial para RING
         float inicio = -((n - 1) * 0.5f) * s.forma.spreadAngulo;
         for (int i = 0; i < n; ++i) {
             float dx = dirBase.x, dz = dirBase.z;
@@ -357,6 +355,7 @@ inline void SkillManager::_empurrarInstancia(SlotSkill& sl, EstadoDoJogo& jogo,
     r.ativo              = true;
     r.posicao            = origem;
     r.direcao            = dir;
+    r.anguloAtual        = std::atan2(dir.z, dir.x); // FORMA_ARC usa para orientar o setor
     r.centro             = origem;
     r.alvo               = origem;
     r.idAlvo             = -1;
@@ -460,25 +459,88 @@ inline void _atualizarEmitter(SlotSkill& sl, EstadoDoJogo& jogo,
         return;
     }
 
+    // BEAM com cooldown > 0 — laser "manual em alta frequência".
+    // Requer mouse pressionado (atirandoAgora). Mantém UMA instância persistente
+    // e atualiza posição+direção continuamente; cobra tensão na taxa do cooldown.
+    if (s.forma.tipo == FORMA_BEAM && s.cooldown > 0.0f) {
+        if (!jogo.atirandoAgora || jogo.stand.emSobrecarga) {
+            sl.pool.clear();           // remove o feixe ao soltar o mouse ou sobrecarga
+            sl.cooldownRestante = 0.0f;
+            return;
+        }
+        // Cobrança de tensão na frequência do cooldown (~30Hz)
+        sl.cooldownRestante -= deltaTime;
+        if (sl.cooldownRestante <= 0.0f) {
+            sl.cooldownRestante = s.cooldown;
+            if (s.custoTensao > 0.0f) {
+                float maxT = maxTensaoDoNivel(jogo.protagonista.upgrades.niveis[TENSAO_UP]);
+                jogo.stand.tensaoAtual += s.custoTensao;
+                if (jogo.stand.tensaoAtual >= maxT) {
+                    jogo.stand.tensaoAtual = maxT;
+                    jogo.stand.emSobrecarga = true;
+                }
+            }
+        }
+        // Atualiza posição e direção do feixe a cada frame (acompanha a mira suavemente)
+        bool temAtivo = false;
+        for (size_t k = 0; k < sl.pool.size(); ++k) {
+            if (sl.pool[k].ativo) {
+                sl.pool[k].posicao   = jogo.stand.posicao;
+                sl.pool[k].centro    = jogo.stand.posicao;
+                sl.pool[k].direcao.x = std::cos(jogo.stand.anguloMira);
+                sl.pool[k].direcao.y = 0.0f;
+                sl.pool[k].direcao.z = std::sin(jogo.stand.anguloMira);
+                temAtivo = true;
+            }
+        }
+        if (!temAtivo) {
+            // Cria a instância inicial do feixe
+            Vetor3D orig = jogo.stand.posicao;
+            RuntimeSkill r;
+            zerarRuntime(r);
+            r.idSkillData        = s.id;
+            r.ativo              = true;
+            r.posicao            = orig;
+            r.centro             = orig;
+            r.direcao.x          = std::cos(jogo.stand.anguloMira);
+            r.direcao.y          = 0.0f;
+            r.direcao.z          = std::sin(jogo.stand.anguloMira);
+            r.tempoVida          = 0.0f;   // não expira por tempo; controlado por atirandoAgora
+            r.dano               = (s.numEfeitos > 0) ? s.efeitos[0].valor : 1;
+            r.raioColisao        = s.forma.raioColisao;
+            r.perfuracaoRestante = s.forma.perfuracao;
+            adicionarAoPool(sl.pool, r);
+        }
+        return;
+    }
+
     // Periódico (cooldown > 0): spawna periodicamente.
     sl.cooldownRestante -= deltaTime;
     if (sl.cooldownRestante <= 0.0f) {
         sl.cooldownRestante = (s.cooldown > 0.0f) ? s.cooldown : 1.0f;
 
-        // Alvo: para skills automáticas, mira no zumbi vivo mais próximo do
-        // Stand (disparo inteligente). Se não há inimigos, usa o jogador como
-        // referência direcional (comportamento seguro e genérico).
-        Vetor3D origem = jogo.stand.posicao;
-        int idAlvoProx = _acharZumbiMaisProximo(jogo, origem);
-        Vetor3D alvo;
-        if (idAlvoProx >= 0)
-            alvo = jogo.horda[idAlvoProx].posicao;
-        else
-            alvo = jogo.protagonista.posicao;
+        // Beam: sobrecarga bloqueia a emissão (laser pede tensão contínua).
+        if (s.forma.tipo == FORMA_BEAM && jogo.stand.emSobrecarga) return;
 
-        int n = 1;
-        if (s.forma.tipo == FORMA_CONE || s.forma.tipo == FORMA_RING)
-            n = (s.forma.quantidade > 0 ? s.forma.quantidade : 1);
+        Vetor3D origem = jogo.stand.posicao;
+
+        // Beam: usa direção de mira; outros: mira no zumbi mais próximo.
+        // idAlvoProx declarado aqui para ter escopo no loop de homing abaixo.
+        int idAlvoProx = -1;
+        Vetor3D alvo;
+        if (s.forma.tipo == FORMA_BEAM) {
+            alvo.x = origem.x + std::cos(jogo.stand.anguloMira) * 10.0f;
+            alvo.y = 0.0f;
+            alvo.z = origem.z + std::sin(jogo.stand.anguloMira) * 10.0f;
+        } else {
+            idAlvoProx = _acharZumbiMaisProximo(jogo, origem);
+            if (idAlvoProx >= 0)
+                alvo = jogo.horda[idAlvoProx].posicao;
+            else
+                alvo = jogo.protagonista.posicao;
+        }
+
+        int n = (s.forma.quantidade > 0 ? s.forma.quantidade : 1);
 
         Vetor3D dirBase = obterDirecaoNormalizada(origem, alvo);
         float inicio    = -((n - 1) * 0.5f) * s.forma.spreadAngulo;
@@ -494,11 +556,10 @@ inline void _atualizarEmitter(SlotSkill& sl, EstadoDoJogo& jogo,
             r.ativo              = true;
             r.posicao            = origem;
             r.direcao            = dir;
+            r.anguloAtual        = std::atan2(dir.z, dir.x); // para FORMA_ARC apontar na mira
             r.centro             = origem;
             r.alvo               = alvo;
             r.idAlvo             = -1;
-            // Disparo inteligente automático: skills homing perseguem o zumbi
-            // mais próximo identificado acima.
             if (s.movimento.tipo == MOV_HOMING)
                 r.idAlvo = idAlvoProx;
             r.tempoVida          = (s.forma.duracao > 0.0f) ? s.forma.duracao : 0.0f;
@@ -506,7 +567,6 @@ inline void _atualizarEmitter(SlotSkill& sl, EstadoDoJogo& jogo,
             r.raioColisao        = s.forma.raioColisao;
             r.perfuracaoRestante = s.forma.perfuracao;
 
-            // Fall: inicia no alto
             if (s.movimento.tipo == MOV_FALL) {
                 r.posicao.y = s.movimento.alturaInicial > 0.0f
                               ? s.movimento.alturaInicial : 10.0f;
@@ -514,6 +574,17 @@ inline void _atualizarEmitter(SlotSkill& sl, EstadoDoJogo& jogo,
             }
 
             adicionarAoPool(sl.pool, r);
+        }
+
+        // Beam: cobra tensão por emissão (~10/s com cooldown=0.1).
+        // Outros skills automáticos (cooldown>0) têm custoTensao=0 e ficam isento.
+        if (s.forma.tipo == FORMA_BEAM && s.custoTensao > 0.0f) {
+            float maxT = maxTensaoDoNivel(jogo.protagonista.upgrades.niveis[TENSAO_UP]);
+            jogo.stand.tensaoAtual += s.custoTensao;
+            if (jogo.stand.tensaoAtual >= maxT) {
+                jogo.stand.tensaoAtual = maxT;
+                jogo.stand.emSobrecarga = true;
+            }
         }
     }
 }
@@ -530,6 +601,7 @@ inline void _processarColisoesSlot(SlotSkill& sl, EstadoDoJogo& jogo,
 
     std::vector<int> candidatos;
     candidatos.reserve(64);
+    std::vector<int> beamTmp;   // reutilizado nas amostras do beam
 
     for (size_t i = 0; i < sl.pool.size(); ++i) {
         RuntimeSkill& r = sl.pool[i];
@@ -543,7 +615,28 @@ inline void _processarColisoesSlot(SlotSkill& sl, EstadoDoJogo& jogo,
         if (!atualizarForma(s, r, deltaTime)) continue;
 
         // 3. Colisão contra vizinhos da grade.
-        grade.obterInimigosVizinhos(r.posicao.x, r.posicao.z, candidatos);
+        // BEAM: percorre várias células — amostra ao longo de todo o comprimento.
+        // Sem isso, apenas zumbis perto da origem (stand) seriam detectados.
+        if (s.forma.tipo == FORMA_BEAM) {
+            candidatos.clear();
+            int nAmostras = (int)(s.forma.comprimento / TAMANHO_CELULA) + 2;
+            for (int si = 0; si < nAmostras; ++si) {
+                float t = s.forma.comprimento * si /
+                          (float)(nAmostras > 1 ? nAmostras - 1 : 1);
+                grade.obterInimigosVizinhos(
+                    r.posicao.x + r.direcao.x * t,
+                    r.posicao.z + r.direcao.z * t,
+                    beamTmp);
+                for (int ti = 0; ti < (int)beamTmp.size(); ++ti) {
+                    bool dup = false;
+                    for (int ci = 0; ci < (int)candidatos.size(); ++ci)
+                        if (candidatos[ci] == beamTmp[ti]) { dup = true; break; }
+                    if (!dup) candidatos.push_back(beamTmp[ti]);
+                }
+            }
+        } else {
+            grade.obterInimigosVizinhos(r.posicao.x, r.posicao.z, candidatos);
+        }
 
         int jaAcertados[MAX_ALVOS];
         int qtd = 0;

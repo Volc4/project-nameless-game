@@ -82,12 +82,13 @@ inline void inicializarArquetipo(EstadoArquetipo& e) {
 
 // ---------------------------------------------------------------------------
 // atributoBloqueado — true se este AtributoArma NÃO pode mais ser melhorado.
-//   Antes da especialização: nada bloqueado.
-//   Depois: tudo que não for atributoA/atributoB fica bloqueado.
+//   Nenhum atributo é bloqueado: upgrades fora do arquétipo aplicam bônus
+//   em cima do projétil do arquétipo atual sem criar um novo arquétipo,
+//   porque verificarEspecializacao() é idempotente após a especialização.
 // ---------------------------------------------------------------------------
 inline bool atributoBloqueado(const EstadoArquetipo& e, int atr) {
-    if (!e.especializado) return false;
-    return (atr != e.atributoA && atr != e.atributoB);
+    (void)e; (void)atr;
+    return false;
 }
 
 // ---------------------------------------------------------------------------

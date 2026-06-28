@@ -175,6 +175,265 @@ inline void verificarSinergias(const InventarioSkills& inv,
 }
 
 // ===========================================================================
+//  PARTE E.0 — TRANSFORMAÇÃO DO ARQUÉTIPO NA SKILL DE DISPARO
+//
+//  Chamado como ÚLTIMO passo em montarBuildCompleta(), exclusivamente para o
+//  slot do Disparo (idSkill == idDisparo). Os upgrades clássicos e os atributos
+//  globais já foram aplicados; o arquétipo sobrepõe a camada mecânica.
+//
+//  ATENÇÃO AOS NOMES DOS ENUMS (legado — nomes ≠ mecânica):
+//   ARQ_CANHAO_ROTATIVO     = Cadência + Perfuração → Laser Contínuo
+//   ARQ_RIFLE_LASER         = Dano + Perfuração     → Sniper
+//   ARQ_CANHAO_FRAGMENTACAO = Balas + Perfuração    → Bumerangue
+//
+//  Os 3 outros arquétipos ficam como TODO explícito.
+// ===========================================================================
+inline SkillData aplicarArquetipoNaSkill(SkillData build,
+                                          const EstadoArquetipo& arq,
+                                          int idSkill,
+                                          int idDisparo,
+                                          const SistemaUpgrades& upgrades) {
+    if (!arq.especializado) return build;
+    if (idSkill != idDisparo) return build;
+
+    switch (arq.arquetipo) {
+
+        // -----------------------------------------------------------------
+        // Cadência + Perfuração → ARQ_CANHAO_ROTATIVO → Laser Contínuo
+        //
+        //  - FORMA_BEAM estacionário seguindo a mira, auto-fire a 10Hz
+        //  - ~10 tensão/s (1.0 por spawn × 10Hz, cobrado no emitter)
+        //  - Atravessa todos os inimigos do segmento (PERFURACAO_INFINITA)
+        //  - Metade do dano (balanceamento)
+        // -----------------------------------------------------------------
+        case ARQ_CANHAO_ROTATIVO: {
+            int nivelCad = upgrades.niveis[CADENCIA];
+
+            // Desfaz a penalidade de dano que Cadência aplica em aplicarUpgradesNaSkill.
+            // No laser, Cadência aumenta a taxa de ticks (DPS), não reduz o dano.
+            if (nivelCad > 0) {
+                float penalidade = 1.0f - 0.10f * (float)nivelCad;
+                if (penalidade < 0.1f) penalidade = 0.1f;
+                float desfazer = 1.0f / penalidade;
+                for (int i = 0; i < build.numEfeitos; ++i) {
+                    if (build.efeitos[i].tipo == EFE_DAMAGE ||
+                        build.efeitos[i].tipo == EFE_SHOCK) {
+                        build.efeitos[i].valor =
+                            (int)((float)build.efeitos[i].valor * desfazer + 0.5f);
+                    }
+                }
+            }
+
+            // Grossura escala com o atributo Balas (forma.quantidade já aplicado pelos upgrades).
+            // qtd=1(nv0):0.8  qtd=3(nv1):1.56  qtd=6(nv2):2.7  qtd=8(nv3):3.46
+            int qtd = (build.forma.quantidade > 0) ? build.forma.quantidade : 1;
+            float largura = 0.8f + (qtd - 1) * 0.38f;
+
+            // Cadência escala a taxa de ticks (mais cadência = mais DPS).
+            // nv0:0.25s(4/s)  nv1:0.19s(5.3/s)  nv2:0.125s(8/s)  nv3:0.063s(16/s)
+            float tickFinal = 0.25f * fatorCadenciaDoNivel(nivelCad);
+
+            build.forma.tipo          = FORMA_BEAM;
+            build.forma.comprimento   = 45.0f;
+            build.forma.largura       = largura;
+            build.forma.tickIntervalo = tickFinal;
+            build.forma.duracao       = 0.0f;
+            build.forma.perfuracao    = PERFURACAO_INFINITA;
+            build.forma.quantidade    = 1;
+            build.forma.spreadAngulo  = 0.0f;
+
+            build.movimento.tipo         = MOV_STATIONARY;
+            build.movimento.seguirOrigem = true;
+            build.movimento.velocidade   = 0.0f;
+
+            build.origem.tipo              = ORIG_STAND;
+            build.origem.reavaliarPorFrame = true;
+
+            build.cooldown    = 0.033f;
+            build.custoTensao = 1.0f;
+            break;
+        }
+
+        // -----------------------------------------------------------------
+        // Dano + Perfuração → ARQ_RIFLE_LASER → Sniper
+        //
+        //  - Cadência reduzida à metade (auto-fire a 1s vs base 0.5s)
+        //  - Projétil maior (raio de colisão × 2 → visual + hitbox)
+        //  - Cor vermelha (campo FormaData.corR/G/B lido por SkillRender)
+        //  - Dano e perfuração já escalados pelos upgrades acima
+        //  - Sem custo de tensão por tiro (compensação pela cadência baixa)
+        // -----------------------------------------------------------------
+        case ARQ_RIFLE_LASER: {
+            // Disparo manual (cooldown=0) pelo clique padrão do jogador.
+            // Projétil maior e vermelho compensa a perda da perfuração extra.
+            build.cooldown    = 0.0f;
+            build.custoTensao = 20.0f;  // dobro do custo normal (10 base → 20 sniper)
+
+            // Projétil maior: colisão E visual crescem juntos (raioColisao × 2)
+            build.forma.raioColisao *= 2.0f;
+
+            // Cor vermelha — lida por SkillRender no case FORMA_PROJECTILE
+            build.forma.corR = 1.0f;
+            build.forma.corG = 0.0f;
+            build.forma.corB = 0.0f;
+            break;
+        }
+
+        // -----------------------------------------------------------------
+        // Balas + Perfuração → ARQ_CANHAO_FRAGMENTACAO → Bumerangue
+        //
+        //  - Projéteis mudam para MOV_BOOMERANG (vai e volta)
+        //  - Metade do dano na VOLTA é aplicado genericamente em
+        //    resolverEfeitos() (SkillExecutor.h) via r.fase == 1,
+        //    sem qualquer referência ao arquétipo.
+        //  - Continua sendo disparo manual (cooldown = 0, mouse click)
+        // -----------------------------------------------------------------
+        case ARQ_CANHAO_FRAGMENTACAO: {
+            build.movimento.tipo   = MOV_BOOMERANG;
+            build.forma.alcanceMax = 15.0f;  // range curto para retorno rápido
+            // cooldown = 0 mantido: disparo manual via mouse click
+            break;
+        }
+
+        // -----------------------------------------------------------------
+        // Cadência + Dano → ARQ_METRALHADORA_PESADA → Metralhadora
+        //
+        //  - Cadência é atributo primário: desfaz sua penalidade de -10%/nível no
+        //    dano para que o dano alto do atributo Dano seja preservado.
+        //  - Perfuração zerada: cada bala para no primeiro inimigo.
+        //  - 15 tensão por tiro: cadência alta queima a barra rapidamente.
+        //  - Projétil vermelho.
+        //  - Manual: a taxa de disparo vem do gate de cadência em Main.cpp.
+        // -----------------------------------------------------------------
+        case ARQ_METRALHADORA_PESADA: {
+            int nivelCad = upgrades.niveis[CADENCIA];
+            // Desfaz penalidade de dano do upgrade de Cadência
+            if (nivelCad > 0) {
+                float pen = 1.0f - 0.10f * (float)nivelCad;
+                if (pen < 0.1f) pen = 0.1f;
+                float desfazer = 1.0f / pen;
+                for (int i = 0; i < build.numEfeitos; ++i) {
+                    if (build.efeitos[i].tipo == EFE_DAMAGE ||
+                        build.efeitos[i].tipo == EFE_SHOCK) {
+                        build.efeitos[i].valor =
+                            (int)((float)build.efeitos[i].valor * desfazer + 0.5f);
+                    }
+                }
+            }
+            build.forma.raioColisao *= 2.0f;
+            build.forma.perfuracao = 0;    // bala para no 1º inimigo
+            build.custoTensao      = 15.0f;
+            build.forma.corR = 1.0f; build.forma.corG = 0.0f; build.forma.corB = 0.0f;
+            // cooldown = 0 mantido: disparo manual
+            break;
+        }
+
+        // -----------------------------------------------------------------
+        // Dano + Balas → ARQ_ESPINGARDA_TATICA → Escopeta
+        //
+        //  - Dano ×2 sobre o valor final (cada perdigão já é forte).
+        //  - Projéteis ×1.8 maiores: impacto visual e hitbox.
+        //  - Spread aumentado para leque de escopeta (0.35 rad entre perdigões).
+        //  - Cadência reduzida a 1/4: cooldownManual = 2.0s (lido em Main.cpp).
+        //  - Projétil vermelho.
+        //  - Manual.
+        // -----------------------------------------------------------------
+        case ARQ_ESPINGARDA_TATICA: {
+            for (int i = 0; i < build.numEfeitos; ++i) {
+                if (build.efeitos[i].tipo == EFE_DAMAGE ||
+                    build.efeitos[i].tipo == EFE_SHOCK) {
+                    build.efeitos[i].valor *= 2;
+                }
+            }
+            build.forma.raioColisao *= 4.0f;
+            build.forma.spreadAngulo = 0.35f; // ~20° entre perdigões, leque de escopeta
+            build.forma.corR = 1.0f; build.forma.corG = 0.0f; build.forma.corB = 0.0f;
+            build.cooldownManual = 2.0f; // 4× mais lento que o base (0.5s × 4 = 2.0s)
+            // cooldown = 0: disparo manual; quantidade vem do atributo Balas
+            break;
+        }
+
+        // -----------------------------------------------------------------
+        // Cadência + Balas → ARQ_METRALHADORA_LEVE → Arco Viajante
+        //
+        //  UM projétil FORMA_ARC que voa em MOV_LINEAR como bala normal.
+        //  Não é leque de N projéteis; Balas não gera múltiplos — o atributo
+        //  apenas escala o dano via os upgrades já aplicados.
+        //
+        //  Cadência: desfaz penalidade de -10%/nível no dano (Cadência é o
+        //  atributo primário do arquétipo).
+        //  Dano ×0.5. 5 tensão/tiro. Azul claro. Manual.
+        //
+        //  Geometria do arco:
+        //    raioInterno = 0         → setor cheio (sem buraco central)
+        //    raioExterno = 4.0       → raio do semicírculo (ajustável)
+        //    anguloAbertura = PI     → 180° (semicírculo à frente)
+        //
+        //  Movimento:
+        //    velocidade = 52 u/s    → igual ao projétil base
+        //    duracao = alcanceMax/52 → mesma distância que o projétil base
+        //    tickIntervalo = 0.05s  → frequência de dano durante a passagem
+        //      (arco passa por inimigo em ~raioExterno/vel ≈ 0.077s → ~1 hit)
+        //
+        //  Pipeline de colisão:
+        //    atualizarForma(FORMA_ARC) sinc r.centro = r.posicao a cada frame.
+        //    dentroDoArco(z.posicao, r.centro, ...) checa a posição ATUAL. ✓
+        // -----------------------------------------------------------------
+        case ARQ_METRALHADORA_LEVE: {
+            const float PI  = 3.14159265f;
+            const float VEL = 52.0f;
+
+            // Desfaz penalidade de dano de Cadência
+            int nivelCadL = upgrades.niveis[CADENCIA];
+            if (nivelCadL > 0) {
+                float pen = 1.0f - 0.10f * (float)nivelCadL;
+                if (pen < 0.1f) pen = 0.1f;
+                float desfazer = 1.0f / pen;
+                for (int i = 0; i < build.numEfeitos; ++i) {
+                    if (build.efeitos[i].tipo == EFE_DAMAGE ||
+                        build.efeitos[i].tipo == EFE_SHOCK) {
+                        build.efeitos[i].valor =
+                            (int)((float)build.efeitos[i].valor * desfazer + 0.5f);
+                    }
+                }
+            }
+            // Dano ×0.5
+            for (int i = 0; i < build.numEfeitos; ++i) {
+                if (build.efeitos[i].tipo == EFE_DAMAGE ||
+                    build.efeitos[i].tipo == EFE_SHOCK) {
+                    build.efeitos[i].valor = (build.efeitos[i].valor + 1) / 2;
+                    if (build.efeitos[i].valor < 1) build.efeitos[i].valor = 1;
+                }
+            }
+
+            // alcanceMax já reflete upgrades de Perfuração aplicados antes
+            float alcance = (build.forma.alcanceMax > 1.0f) ? build.forma.alcanceMax : 50.0f;
+
+            build.forma.tipo           = FORMA_ARC;
+            build.forma.raioInterno    = 0.0f;        // setor cheio: sem buraco
+            build.forma.raioExterno    = 4.0f;        // raio do semicírculo
+            build.forma.anguloAbertura = PI;           // 180° fixo
+            build.forma.duracao        = alcance / VEL; // expira quando chega no alcance
+            build.forma.tickIntervalo  = 0.05f;        // dano frequente na passagem
+            build.forma.perfuracao     = PERFURACAO_INFINITA;
+            build.forma.quantidade     = 1;            // SEMPRE um arco; Balas ≠ múltiplos
+            build.forma.spreadAngulo   = 0.0f;
+            build.movimento.tipo       = MOV_LINEAR;
+            build.movimento.velocidade = VEL;
+            build.origem.reavaliarPorFrame = false;
+            build.custoTensao          = 5.0f;
+            build.forma.corR = 0.4f; build.forma.corG = 0.8f; build.forma.corB = 1.0f;
+            break;
+        }
+
+        default:
+            break;
+    }
+
+    return build;
+}
+
+// ===========================================================================
 //  PARTE E — MONTAGEM DA BUILD COMPLETA (MULTI-SLOT, Fase 6.5)
 //
 //  Itera TODOS os slots do inventário (0..numEquipadas-1).
@@ -190,63 +449,67 @@ inline void verificarSinergias(const InventarioSkills& inv,
 //  Esta é a ÚNICA função que deve chamar skillManager.registrarSlot().
 //  Nunca chame reconstruirHabilidade() ou selecionarSkillBase() em código novo.
 // ===========================================================================
+// Overload principal: recebe EstadoArquetipo e aplica transformação mecânica.
 inline void montarBuildCompleta(const InventarioSkills& inv,
                                 const SistemaUpgrades& upgrades,
-                                SkillManager& skills) {
-    // Limpa todos os slots antes de reconfigurar
+                                SkillManager& skills,
+                                const EstadoArquetipo& arq) {
     skills.limparTodos();
 
-    // Constrói os desbloqueios a partir dos upgrades clássicos
     EstadoDesbloqueio d;
     inicializarDesbloqueio(d);
     for (int t = 0; t < TOTAL_UPGRADES; ++t)
         liberarPorUpgrade(d, (TipoUpgrade)t, upgrades.niveis[t]);
 
-    // Itera cada skill equipada e registra seu slot
+    // Cache do id do Disparo para aplicarArquetipoNaSkill()
+    int idDisparo = SkillFactory::id("Disparo");
+
     for (int slot = 0; slot < inv.numEquipadas; ++slot) {
         int idSkill = inv.equipadas[slot];
         if (idSkill < 0) continue;
 
-        // 1. Obtém o modelo base da skill.
-        //    Armas Inteligentes têm BUILD EXPLÍCITA por nível (não escala
-        //    genérica): cada nível muda comportamento conforme o spec.
         SkillData build;
         int armaInt = armaInteligenteDeId(idSkill);
         bool ehArmaInt = (armaInt >= 0);
 
         if (ehArmaInt) {
             int nv = inv.nivelSkill[idSkill];
-            if (nv < 1) nv = 1;                       // equipada = nível 1
+            if (nv < 1) nv = 1;
             if (nv > NIVEL_MAX_ARMA_INTELIGENTE) nv = NIVEL_MAX_ARMA_INTELIGENTE;
             build = buildArmaInteligente(armaInt, nv);
         } else {
             build = SkillFactory::criar(idSkill);
-            if (!build.ativa) build = buildBase();    // fallback seguro
+            if (!build.ativa) build = buildBase();
         }
 
-        // 2. Aplica upgrades clássicos de atributo (DANO, CADENCIA, etc.)
-        //    sobre a base desta skill específica
+        // 1. Upgrades clássicos (DANO, CADENCIA, PERFURACAO, QUANTIDADE)
         build = aplicarUpgradesNaSkill(build, upgrades, d);
 
-        // 3. Nível de evolução:
-        //    - Armas Inteligentes JÁ trazem o comportamento do nível na build
-        //      explícita (passo 1), então NÃO recebem a escala genérica.
-        //    - Demais skills usam a escala genérica por nível.
+        // 2. Nível de evolução da skill (não aplicado em Armas Inteligentes)
         if (!ehArmaInt)
             build = aplicarNivelSkill(build, inv.nivelSkill[idSkill]);
 
-        // 4. Aplica atributos globais do inventário
+        // 3. Atributos globais do inventário
         build = aplicarAtributosGlobaisNaSkill(build, inv.atributosGlobais);
 
-        // 5. Garante que o id da build reflita o slot (para o executor)
-        build.id = idSkill;
+        // 4. Transformação de Arquétipo — ÚLTIMO passo, sobre tudo anterior.
+        //    Só afeta o Disparo base (idSkill == idDisparo).
+        build = aplicarArquetipoNaSkill(build, arq, idSkill, idDisparo, upgrades);
 
-        // 6. Registra no slot correspondente do SkillManager
+        build.id = idSkill;
         skills.registrarSlot(slot, build);
     }
 
-    // 7. Verifica sinergias após todos os slots estarem configurados
     verificarSinergias(inv, upgrades, skills);
+}
+
+// Overload de compatibilidade: sem arquétipo (nenhuma transformação aplicada).
+//   Mantém chamadas legadas compilando (GameLogic.h, código de teste).
+inline void montarBuildCompleta(const InventarioSkills& inv,
+                                const SistemaUpgrades& upgrades,
+                                SkillManager& skills) {
+    EstadoArquetipo neutro; inicializarArquetipo(neutro);
+    montarBuildCompleta(inv, upgrades, skills, neutro);
 }
 
 // ===========================================================================
@@ -257,20 +520,20 @@ static const char* NOME_ATRIB[TOTAL_UPGRADES] = {
     "+Dano",
     "+Cadencia",
     "+Perfuracao",
-    "+Eficiencia",
-    "+Velocidade",
+    "+Balas",
+    "+Tensao",
     "+Vida",
-    "+Balas"
+    "+Velocidade"
 };
 
 static const char* DESC_ATRIB[TOTAL_UPGRADES] = {
-    "+10% de dano e +20% de tamanho da bala",
-    "+20% Vel. de disparo e -10% custo de tensao, mas -10% de dano base",
-    "+2 perfuracao e +10 de alcance maximo",
-    "-10% custo de tensao por disparo",
-    "+20% velocidade de movimento",
-    "+15% HP maximo e +1 HP",
-    "+1 projetil por disparo"
+    "dano base*2 por nivel",
+    "cadencia de disparo mais rapida",
+    "projeteis atravessam mais inimigos",
+    "mais projeteis por disparo em cone",
+    "barra de tensao com mais limite",
+    "+2 HP maximo por nivel",
+    "1.25x / 1.5x / 2.0x de velocidade"
 };
 
 static const EscolhaRaridade RARIDADE_ATRIB[TOTAL_UPGRADES] = {
@@ -397,21 +660,8 @@ inline void sortearRecompensas(MenuLevelUp& menu, const InventarioSkills& inv,
                                const SistemaUpgrades& up) {
     limparMenu(menu);
 
-    if (!_tentarNovaSkill(menu, inv))
-        if (!_tentarUpgradeSkill(menu, inv))
-            _tentarAtributoGlobal(menu, arq, up);
-
-    if (menu.quantidade < MAX_ESCOLHAS_MENU) {
-        if (!_tentarUpgradeSkill(menu, inv))
-            if (!_tentarNovaSkill(menu, inv))
-                _tentarAtributoGlobal(menu, arq, up);
-    }
-
-    if (menu.quantidade < MAX_ESCOLHAS_MENU) {
-        if (!_tentarAtributoGlobal(menu, arq, up))
-            if (!_tentarNovaSkill(menu, inv))
-                _tentarUpgradeSkill(menu, inv);
-    }
+    while (menu.quantidade < MAX_ESCOLHAS_MENU)
+        if (!_tentarAtributoGlobal(menu, arq, up)) break;
 }
 
 // Overload de compatibilidade: sem estado de arquétipo (nada bloqueado).
@@ -467,18 +717,10 @@ inline void aplicarEscolhaLevelUp(const LevelUpChoice& escolha,
                 upgrades.niveis[tipo]++;
 
             if (tipo == VIDA) {
-                int novoHP = 3 + upgrades.niveis[VIDA] * 2;
-                int diff   = novoHP - jogador.hpMaximo;
-                jogador.hpMaximo = novoHP;
-                jogador.hp += diff;
+                const int HP_POR_NIVEL = 2;
+                jogador.hpMaximo += HP_POR_NIVEL;
+                jogador.hp       += HP_POR_NIVEL;
                 if (jogador.hp > jogador.hpMaximo) jogador.hp = jogador.hpMaximo;
-            }
-            if (tipo == VELOCIDADE) {
-                const float vels[4] = {10.f, 13.f, 18.f, 28.f};
-                int nv = upgrades.niveis[VELOCIDADE];
-                if (nv > 3) nv = 3;
-                jogador.velocidade = vels[nv];
-                jogador.velocidade *= inv.atributosGlobais.bonusVelocidade;
             }
 
             // Após evoluir um atributo de arma, verifica especialização/evolução.
@@ -487,8 +729,8 @@ inline void aplicarEscolhaLevelUp(const LevelUpChoice& escolha,
         }
     }
 
-    // Remonta a build completa com TODOS os slots (inclui verificarSinergias)
-    montarBuildCompleta(inv, upgrades, skills);
+    // Remonta a build completa com arquétipo (inclui verificarSinergias)
+    montarBuildCompleta(inv, upgrades, skills, arq);
 }
 
 // Overload de compatibilidade (sem estado de arquétipo).
