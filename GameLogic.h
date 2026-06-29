@@ -160,6 +160,7 @@ inline Zumbi invocarZumbi(TipoZumbi tipoDesejado, Vetor3D posicaoInicial) {
     z.tipo        = tipoDesejado;
     z.estadoAtual = WANDER;
     z.vivo        = true;
+    z.ehBoss      = false; // zumbis comuns nunca são o Boss
 
     switch (tipoDesejado) {
         case NORMAL:

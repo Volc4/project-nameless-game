@@ -54,6 +54,36 @@ inline void tocarEfeito(const char* caminhoSom) {
     tocarEfeitoComVolume(caminhoSom, 150);
 }
 
+// =======================================================
+// FALA DA PROTAGONISTA — canal dedicado (sfx_fala)
+//
+//   Separado do pool rotativo sfx_0..9 para que sons de
+//   zumbis nunca sobrescrevam nem interrompam a voz da Sofia.
+//   Use SEMPRE estas duas funções para as falas dela.
+// =======================================================
+
+// Toca uma fala da protagonista no canal exclusivo sfx_fala.
+// Para a fala anterior antes de começar (sem sobreposição de voz).
+inline void tocarFalaPersonagem(const char* caminhoSom, int volume) {
+    mciSendString("stop sfx_fala",  NULL, 0, NULL);
+    mciSendString("close sfx_fala", NULL, 0, NULL);
+    std::string open = std::string("open \"") + caminhoSom +
+                       "\" type mpegvideo alias sfx_fala";
+    mciSendString(open.c_str(), NULL, 0, NULL);
+    std::string vol  = std::string("setaudio sfx_fala volume to ") +
+                       std::to_string(volume);
+    mciSendString(vol.c_str(), NULL, 0, NULL);
+    mciSendString("play sfx_fala", NULL, 0, NULL);
+}
+
+// Retorna true enquanto o canal sfx_fala ainda estiver reproduzindo.
+// Use para bloquear sons de zumbis que colidiriam com a fala.
+inline bool personagemEstaFalando() {
+    char modo[32] = "";
+    mciSendString("status sfx_fala mode", modo, sizeof(modo), NULL);
+    return (std::string(modo) == "playing");
+}
+
 // Sorteia e toca um dos três sons de morte de zumbi em volume reduzido
 inline void tocarMorteZumbi() {
     int sorteio = rand() % 3;

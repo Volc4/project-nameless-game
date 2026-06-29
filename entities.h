@@ -163,6 +163,23 @@ enum TipoZumbi { NORMAL, RAPIDO, TANK, ATIRADOR, EXPLOSIVO };
 // Estados da IA (FSM)
 enum EstadoIA { WANDER, CHASE };
 
+// ===========================================================================
+// SISTEMA DE FASES DA PARTIDA
+//   Controla em qual fase o jogo se encontra usando uma máquina de estados
+//   simples. Evita múltiplos booleanos espalhados pelo código.
+//
+//   FASE_NORMAL        — spawn normal de zumbis.
+//   FASE_AGUARDANDO    — 10 min atingidos; spawn bloqueado; arena sendo limpa.
+//   FASE_BOSS          — Boss ativo perseguindo o jogador.
+//   FASE_VITORIA       — Boss derrotado; spawn retoma infinitamente.
+// ===========================================================================
+enum FasePartida {
+    FASE_NORMAL,
+    FASE_AGUARDANDO_BOSS,
+    FASE_BOSS,
+    FASE_VITORIA
+};
+
 // Dados do Zumbi
 struct Zumbi {
     Vetor3D posicao;
@@ -174,6 +191,7 @@ struct Zumbi {
     int vida;
     int dano;        // dano de contato (aplicado via p.hp -= z.dano)
     float tiroTimer; // timer de cooldown do ATIRADOR entre disparos
+    bool ehBoss;     // true somente para o Boss (tratamento especial em toda a pipeline)
 };
 
 // Projétil disparado pelo Atirador (devorável, move-se em linha reta)
@@ -319,6 +337,19 @@ struct EstadoDoJogo {
     // a partir da transform da Sofia + bone socket). Usada como origem dos
     // projéteis manuais do Disparo.
     Vetor3D posicaoPistola;
+
+    // ===========================================================================
+    // SISTEMA DE BOSS — campos de controle da máquina de estados
+    //   fasePartida      : fase atual da partida (ver enum FasePartida)
+    //   tempMensagemBoss : timer decrescente das mensagens "BOSS APARECEU!" /
+    //                      "BOSS DERROTADO!" exibidas na tela
+    //   bossJaFoiInvocado: garante que o Boss apareça apenas UMA vez por partida
+    //   tempoEntradaBoss : timer da animação de entrada visual do Boss (pulso)
+    // ===========================================================================
+    FasePartida fasePartida;
+    float       tempMensagemBoss;
+    bool        bossJaFoiInvocado;
+    float       tempoEntradaBoss;
 };
 
 // ---------------------------------------------------------------------------

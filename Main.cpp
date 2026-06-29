@@ -83,6 +83,21 @@ static const float PROJETIL_ZUMBI_VEL = 12.0f; // velocidade dos projéteis
 static const int   PROJETIL_ZUMBI_DANO = 1;    // dano dos projéteis
 static const float EXPLOSAO_RAIO      = 3.0f;  // raio da explosão do Explosivo
 
+// ===========================================================================
+// CONSTANTES DO SISTEMA DE BOSS
+//   Centralizadas aqui para facilitar balanceamento sem tocar na lógica.
+//   Ajuste apenas estes valores para rebalancear o Boss.
+// ===========================================================================
+static const int   BOSS_VIDA_MAXIMA     = 5000;  // HP total do Boss
+static const int   BOSS_DANO           = 5;      // dano por toque no jogador
+static const float BOSS_VELOCIDADE     = 8.0f;   // 80 % da velocidade do RAPIDO (10.0f)
+static const float BOSS_RAIO_COLISAO   = 2.5f;   // aprox. 5x maior que um zumbi NORMAL
+static const float BOSS_DIST_SPAWN     = 40.0f;  // distância mínima do jogador no spawn
+static const float BOSS_TEMPO_TRIGGER  = 600.0f; // 10 min: momento em que o spawn é bloqueado
+static const int   BOSS_XP_RECOMPENSA  = 2000;   // XP concedido ao derrotar o Boss
+static const float BOSS_MSG_DURACAO    = 5.0f;   // duração das mensagens na tela (segundos)
+static const float BOSS_ENTRADA_DURACAO = 2.5f;  // duração do efeito visual de entrada
+
 static const float ARENA_HALF   = 150.0f;   // metade do lado da arena quadrada
 static const float CAM_DIST     = 30.0f;    // distância da câmera ao ponto focal
 static const float CAM_ANGLE_X  = 45.0f;   // inclinação da câmera (graus)
@@ -175,6 +190,10 @@ static void desenharPause();
 static void desenharHitboxDevorar();
 static void desenharProjeteisZumbi();
 static Vetor3D projetarMouseNoMundo(int mx, int my);
+// --- Boss -------------------------------------------------------------------
+static void invocarBoss();
+static void atualizarBoss(float dt);
+static void desenharBoss(const Zumbi& z);
 
 // =============================================================================
 //  FUNÇÕES "CONTRATO" EXIGIDAS POR SkillExecutor.h
@@ -188,6 +207,37 @@ void processarMorteZumbi(EstadoDoJogo& jogo, Zumbi& z) {
     if (!z.vivo) return;
     z.vivo = false;
     g_kills++;
+
+    // =========================================================================
+    // BOSS MORREU — tratamento especial antes de qualquer lógica de zumbi comum
+    // =========================================================================
+    if (z.ehBoss) {
+        tocarMorteZumbi(); // som de impacto (reutilizado; troque por som exclusivo se desejar)
+        // Explosão visual em duas ondas de partículas (roxo + dourado)
+        criarParticulasMorte(jogo, z.posicao, 0.55f, 0.0f, 1.0f);
+        criarParticulasMorte(jogo, z.posicao, 1.0f,  0.8f, 0.0f);
+
+        // Grande recompensa de XP
+        jogo.protagonista.xpAtual += BOSS_XP_RECOMPENSA;
+
+        // Transição de fase: Boss derrotado → Vitória
+        jogo.fasePartida      = FASE_VITORIA;
+        jogo.tempMensagemBoss = BOSS_MSG_DURACAO;
+
+        // Verificar level-up acumulado pela XP do Boss
+        while (jogo.protagonista.xpAtual >= jogo.protagonista.xpParaProximoNivel) {
+            jogo.protagonista.xpAtual -= jogo.protagonista.xpParaProximoNivel;
+            jogo.protagonista.xpParaProximoNivel =
+                (int)(jogo.protagonista.xpParaProximoNivel * 1.4f);
+            jogo.protagonista.nivel++;
+            sortearRecompensas(jogo.menuAtual, jogo.inventario,
+                               jogo.arquetipoArma, jogo.protagonista.upgrades);
+            jogo.pausadoParaUpgrade = true;
+            jogo.jogoPausado        = true;
+        }
+        return; // não executa a lógica de zumbi comum abaixo
+    }
+    // =========================================================================
 
     tocarMorteZumbi();
 
@@ -525,6 +575,12 @@ static void inicializarEstadoJogo() {
     g_faladaMagrelas   = false;
     g_faladaCarecas    = false;
     g_faladaFestaZumbi = false;
+
+    // --- Sistema de Boss ---
+    g_jogo.fasePartida        = FASE_NORMAL;
+    g_jogo.tempMensagemBoss   = 0.0f;
+    g_jogo.bossJaFoiInvocado  = false;
+    g_jogo.tempoEntradaBoss   = 0.0f;
     g_jogo.ultimaPosicaoMorte.x = 0.0f;
     g_jogo.ultimaPosicaoMorte.y = 0.0f;
     g_jogo.ultimaPosicaoMorte.z = 0.0f;
@@ -559,6 +615,7 @@ static Zumbi criarZumbi(TipoZumbi tipo) {
     z.tipo        = tipo;
     z.estadoAtual = WANDER;
     z.vivo        = true;
+    z.ehBoss      = false; // zumbis comuns nunca são o Boss
 
     // Spawn em anel ao redor do jogador — fora da tela, dentro da arena
     {
@@ -793,19 +850,22 @@ static void atualizarZumbis(float dt) {
     }
 
     // --- Gerenciador de Áudio Ambiente dos Zumbis ---
-    static float timerSomZumbi = 2.0f; 
-    
-    // Só consome canal de áudio se a horda estiver ativa no mapa
+    static float timerSomZumbi = 2.0f;
+
+    // Sons ambiente de zumbi: só disparam se a personagem não estiver falando.
+    // Quando ela fala, acumulamos o timer normalmente para não gerar uma
+    // "fila" reprimida — ao silenciar, o próximo som já está pronto.
     if (zumbisAtivos > 0) {
         timerSomZumbi -= dt;
         if (timerSomZumbi <= 0.0f) {
-            // Sorteia um dos três sons
-            int sorteio = rand() % 3;
-            if (sorteio == 0)      tocarEfeito("Sons/brains1.mp3");
-            else if (sorteio == 1) tocarEfeito("Sons/brains2.mp3");
-            else                   tocarEfeito("Sons/passos_zumbi.mp3");
-            
-            // Define o tempo para o próximo som aleatoriamente entre 1.5s e 3.5s
+            if (!personagemEstaFalando()) {
+                // Sorteia um dos três sons de zumbi apenas se a Sofia não estiver falando
+                int sorteio = rand() % 3;
+                if (sorteio == 0)      tocarEfeito("Sons/brains1.mp3");
+                else if (sorteio == 1) tocarEfeito("Sons/brains2.mp3");
+                else                   tocarEfeito("Sons/passos_zumbi.mp3");
+            }
+            // Recarrega o timer independente de ter tocado ou não
             timerSomZumbi = 1.5f + ((rand() % 200) / 100.0f);
         }
     }
@@ -902,6 +962,75 @@ static void atualizarProjeteisZumbi(float dt) {
 
 
 // =============================================================================
+//  SISTEMA DE BOSS
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+// invocarBoss — cria o Boss como um Zumbi especial dentro da horda existente.
+//   Reutiliza todo o sistema de colisão, dano e IA de perseguição dos zumbis.
+//   O Boss é colocado a pelo menos BOSS_DIST_SPAWN unidades do jogador.
+// ---------------------------------------------------------------------------
+static void invocarBoss() {
+    Zumbi boss;
+    boss.ehBoss      = true;
+    boss.tipo        = NORMAL;       // campo tipo não é usado no Boss (ehBoss prevalece)
+    boss.estadoAtual = CHASE;
+    boss.vivo        = true;
+    boss.vida        = BOSS_VIDA_MAXIMA;
+    boss.dano        = BOSS_DANO;
+    boss.velocidade  = BOSS_VELOCIDADE;
+    boss.raioColisao = BOSS_RAIO_COLISAO;
+    boss.tiroTimer   = 0.0f;
+
+    // Calcula posição de spawn: anel ao redor do jogador, dentro da arena
+    const float PI = 3.14159265f;
+    const float lim = ARENA_HALF - BOSS_RAIO_COLISAO - 2.0f;
+    Jogador& jp = g_jogo.protagonista;
+
+    float sx = 0.0f, sz = 0.0f;
+    for (int tentativa = 0; tentativa < 16; ++tentativa) {
+        float ang = (rand() % 360) * (PI / 180.0f);
+        float r   = BOSS_DIST_SPAWN + (float)(rand() % 20);
+        sx = jp.posicao.x + std::cos(ang) * r;
+        sz = jp.posicao.z + std::sin(ang) * r;
+        if (sx >  lim) sx =  lim;
+        if (sx < -lim) sx = -lim;
+        if (sz >  lim) sz =  lim;
+        if (sz < -lim) sz = -lim;
+        // Verifica distância mínima do jogador
+        float dx = sx - jp.posicao.x, dz = sz - jp.posicao.z;
+        if ((dx*dx + dz*dz) >= BOSS_DIST_SPAWN * BOSS_DIST_SPAWN * 0.5f) break;
+    }
+
+    boss.posicao.x = sx;
+    boss.posicao.y = 0.0f;
+    boss.posicao.z = sz;
+
+    g_jogo.horda.push_back(boss);
+
+    // Ativa fase e timers
+    g_jogo.fasePartida        = FASE_BOSS;
+    g_jogo.tempMensagemBoss   = BOSS_MSG_DURACAO;
+    g_jogo.tempoEntradaBoss   = BOSS_ENTRADA_DURACAO;
+    g_jogo.bossJaFoiInvocado  = true;
+}
+
+// ---------------------------------------------------------------------------
+// atualizarBoss — decrementa timers visuais do Boss (mensagem + entrada).
+//   Chamado a cada frame em cbIdle quando o jogo não está pausado.
+// ---------------------------------------------------------------------------
+static void atualizarBoss(float dt) {
+    if (g_jogo.tempMensagemBoss > 0.0f) {
+        g_jogo.tempMensagemBoss -= dt;
+        if (g_jogo.tempMensagemBoss < 0.0f) g_jogo.tempMensagemBoss = 0.0f;
+    }
+    if (g_jogo.tempoEntradaBoss > 0.0f) {
+        g_jogo.tempoEntradaBoss -= dt;
+        if (g_jogo.tempoEntradaBoss < 0.0f) g_jogo.tempoEntradaBoss = 0.0f;
+    }
+}
+
+// =============================================================================
 //  SPAWN PERIÓDICO DE ZUMBIS
 // =============================================================================
 
@@ -933,16 +1062,47 @@ static void atualizarSpawn(float dt) {
     g_jogo.tempoSobrevivido += dt;
     if (!g_faladaMagrelas && g_jogo.tempoSobrevivido >= 60.0f) {
         g_faladaMagrelas = true;
-        tocarEfeitoComVolume("Sons/Magrelas.mp3", VOLUME_FALA);
+        tocarFalaPersonagem("Sons/Magrelas.mp3", VOLUME_FALA);   // canal dedicado
     }
     if (!g_faladaCarecas && g_jogo.tempoSobrevivido >= 120.0f) {
         g_faladaCarecas = true;
-        tocarEfeitoComVolume("Sons/Carecas.mp3", VOLUME_FALA);
+        tocarFalaPersonagem("Sons/Carecas.mp3", VOLUME_FALA);    // canal dedicado
     }
     if (!g_faladaFestaZumbi && g_jogo.tempoSobrevivido >= 180.0f) {
         g_faladaFestaZumbi = true;
-        tocarEfeitoComVolume("Sons/FestaZumbi.mp3", VOLUME_FALA);
+        tocarFalaPersonagem("Sons/FestaZumbi.mp3", VOLUME_FALA); // canal dedicado
     }
+
+    // =========================================================================
+    // MÁQUINA DE ESTADOS DA PARTIDA
+    //   Transições avaliadas a cada frame, independente do tick de spawn.
+    // =========================================================================
+
+    // Transição FASE_NORMAL → FASE_AGUARDANDO_BOSS ao atingir 10 minutos
+    if (g_jogo.fasePartida == FASE_NORMAL &&
+        g_jogo.tempoSobrevivido >= BOSS_TEMPO_TRIGGER) {
+        g_jogo.fasePartida = FASE_AGUARDANDO_BOSS;
+    }
+
+    // FASE_AGUARDANDO_BOSS: quando a arena estiver limpa (sem zumbis vivos),
+    // invoca o Boss. A condição tempoSobrevivido >= 240s é exigida pelo
+    // design para garantir mínimo de progressão antes da batalha.
+    if (g_jogo.fasePartida == FASE_AGUARDANDO_BOSS &&
+        !g_jogo.bossJaFoiInvocado &&
+        g_jogo.tempoSobrevivido >= 240.0f) {
+        int vivos = 0;
+        for (size_t s = 0; s < g_jogo.horda.size(); ++s)
+            if (g_jogo.horda[s].vivo) vivos++;
+        if (vivos == 0) invocarBoss();
+    }
+
+    // Bloqueia spawn durante espera e durante batalha do Boss
+    if (g_jogo.fasePartida == FASE_AGUARDANDO_BOSS ||
+        g_jogo.fasePartida == FASE_BOSS) {
+        return; // nenhum zumbi novo enquanto Boss não for derrotado
+    }
+    // =========================================================================
+
     g_jogo.tempoUltimoSpawn += dt;
     if (g_jogo.tempoUltimoSpawn < SPAWN_INTERVALO) return;
     g_jogo.tempoUltimoSpawn = 0.0f;
@@ -1275,11 +1435,96 @@ static void desenharStand() {
     glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
 }
 
-// Zumbis
+// ---------------------------------------------------------------------------
+// desenharBoss — renderiza o Boss com visual diferenciado:
+//   • Bloco principal roxo escuro ~5x maior que zumbi normal
+//   • 4 espigões dourados no topo (coroa)
+//   • Aura pulsante no chão
+//   • Efeito de "aparição" durante tempoEntradaBoss (pulso de escala)
+// ---------------------------------------------------------------------------
+static void desenharBoss(const Zumbi& z) {
+    // Efeito de entrada: escala pulsa nos primeiros BOSS_ENTRADA_DURACAO segundos
+    float escalaEntrada = 1.0f;
+    if (g_jogo.tempoEntradaBoss > 0.0f) {
+        float t   = 1.0f - g_jogo.tempoEntradaBoss / BOSS_ENTRADA_DURACAO; // 0→1
+        float arco = std::sin(t * 3.14159265f * 5.0f);                     // ondas
+        escalaEntrada = 1.0f + arco * 0.35f;
+    }
+
+    float s = z.raioColisao * 1.8f * escalaEntrada; // largura base do bloco
+
+    // --- Aura pulsante no chão ------------------------------------------------
+    glDisable(GL_LIGHTING);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    float pulso = 0.25f + std::sin(g_jogo.tempoSobrevivido * 5.0f) * 0.12f;
+    glColor4f(0.55f, 0.0f, 1.0f, pulso);
+    desenharCirculo3D(z.posicao.x, 0.02f, z.posicao.z, s * 2.2f,
+                      0.55f, 0.0f, 1.0f);
+    glDisable(GL_BLEND);
+
+    // --- Corpo principal (roxo escuro) ----------------------------------------
+    float cR = 0.45f, cG = 0.0f, cB = 0.85f;
+    float alturaCorpo = s * 1.8f;
+    desenharBloco3D(z.posicao.x, 0.0f, z.posicao.z,
+                    s, s, alturaCorpo,
+                    cR,         cG, cB,          // topo
+                    cR*0.80f,   cG, cB*0.80f,    // frente
+                    cR*0.60f,   cG, cB*0.60f,    // trás
+                    cR*0.90f,   cG, cB*0.90f,    // direita
+                    cR*0.70f,   cG, cB*0.70f);   // esquerda
+
+    // --- Coroa: 4 espigões dourados no topo -----------------------------------
+    float topoY   = alturaCorpo;
+    float spikeW  = s * 0.28f;
+    float spikeH  = s * 0.55f;
+    float offCroa = s * 0.38f;
+    float ofsX[4] = { offCroa, -offCroa, 0.0f,     0.0f     };
+    float ofsZ[4] = { 0.0f,     0.0f,    offCroa, -offCroa  };
+    for (int sp = 0; sp < 4; ++sp) {
+        desenharBloco3D(z.posicao.x + ofsX[sp], topoY, z.posicao.z + ofsZ[sp],
+                        spikeW, spikeW, spikeH,
+                        1.0f, 0.85f, 0.0f,     // topo dourado
+                        0.9f, 0.70f, 0.0f,
+                        0.7f, 0.55f, 0.0f,
+                        0.95f,0.75f, 0.0f,
+                        0.75f,0.60f, 0.0f);
+    }
+
+    // --- Olhos brilhantes (dois blocos brancos na face frontal) ---------------
+    float olhoY  = alturaCorpo * 0.65f;
+    float olhoSz = s * 0.18f;
+    float olhoSx = s * 0.16f;
+    // olho esquerdo
+    desenharBloco3D(z.posicao.x - s * 0.25f, olhoY, z.posicao.z + s * 0.5f,
+                    olhoSx, olhoSz, olhoSz,
+                    1.0f, 1.0f, 1.0f,
+                    0.9f, 0.0f, 0.0f,
+                    0.7f, 0.0f, 0.0f,
+                    1.0f, 1.0f, 1.0f,
+                    1.0f, 1.0f, 1.0f);
+    // olho direito
+    desenharBloco3D(z.posicao.x + s * 0.25f, olhoY, z.posicao.z + s * 0.5f,
+                    olhoSx, olhoSz, olhoSz,
+                    1.0f, 1.0f, 1.0f,
+                    0.9f, 0.0f, 0.0f,
+                    0.7f, 0.0f, 0.0f,
+                    1.0f, 1.0f, 1.0f,
+                    1.0f, 1.0f, 1.0f);
+}
+
+// Zumbis (e Boss, redirecionado para desenharBoss)
 static void desenharZumbis() {
     for (size_t i = 0; i < g_jogo.horda.size(); ++i) {
         const Zumbi& z = g_jogo.horda[i];
         if (!z.vivo) continue;
+
+        // Boss tem renderização própria (tamanho, cor, coroa, aura)
+        if (z.ehBoss) {
+            desenharBoss(z);
+            continue;
+        }
+
         float cR, cG, cB;
         obterCorBaseZumbi(z.tipo, cR, cG, cB);
         float s = z.raioColisao * 1.8f;
@@ -1626,6 +1871,132 @@ static void desenharHUD() {
                                   "GAME OVER  [R] Reiniciar", 1.0f, 0.2f, 0.2f);
     }
 
+    // =========================================================================
+    // HUD DO SISTEMA DE BOSS
+    // =========================================================================
+
+    // --- FASE_AGUARDANDO_BOSS: aviso + contador de zumbis restantes ----------
+    if (g_jogo.fasePartida == FASE_AGUARDANDO_BOSS) {
+        // Conta apenas zumbis comuns vivos (não conta Boss)
+        int vivos = 0;
+        for (size_t s2 = 0; s2 < g_jogo.horda.size(); ++s2)
+            if (g_jogo.horda[s2].vivo && !g_jogo.horda[s2].ehBoss) vivos++;
+
+        // Painel de aviso no topo
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glColor4f(0.4f, 0.0f, 0.0f, 0.65f);
+        glBegin(GL_QUADS);
+            glVertex2f(W*0.25f, H - 70.0f);
+            glVertex2f(W*0.75f, H - 70.0f);
+            glVertex2f(W*0.75f, H - 10.0f);
+            glVertex2f(W*0.25f, H - 10.0f);
+        glEnd();
+        glDisable(GL_BLEND);
+
+        desenharTextoCentralizado(W*0.5f, H - 30.0f,
+                                  "BOSS SE APROXIMA!", 1.0f, 0.3f, 0.0f);
+        {
+            char bufA[64];
+            std::snprintf(bufA, sizeof(bufA),
+                          "Elimine os zumbis restantes: %d", vivos);
+            desenharTextoCentralizado(W*0.5f, H - 52.0f,
+                                      bufA, 1.0f, 0.75f, 0.0f);
+        }
+    }
+
+    // --- FASE_BOSS: barra de vida do Boss no topo da tela --------------------
+    if (g_jogo.fasePartida == FASE_BOSS) {
+        for (size_t bi = 0; bi < g_jogo.horda.size(); ++bi) {
+            if (!g_jogo.horda[bi].ehBoss || !g_jogo.horda[bi].vivo) continue;
+            const Zumbi& bss = g_jogo.horda[bi];
+
+            const float bBarW = 520.0f;
+            const float bBarH = 24.0f;
+            const float bBarX = (W - bBarW) * 0.5f;
+            const float bBarY = H - 58.0f;
+
+            // Fundo do painel
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glColor4f(0.08f, 0.0f, 0.14f, 0.88f);
+            glBegin(GL_QUADS);
+                glVertex2f(bBarX - 8.0f, bBarY - 26.0f);
+                glVertex2f(bBarX + bBarW + 8.0f, bBarY - 26.0f);
+                glVertex2f(bBarX + bBarW + 8.0f, bBarY + bBarH + 6.0f);
+                glVertex2f(bBarX - 8.0f, bBarY + bBarH + 6.0f);
+            glEnd();
+            glDisable(GL_BLEND);
+
+            // Nome do Boss
+            desenharTextoCentralizado(W * 0.5f, bBarY + bBarH + 2.0f - 24.0f,
+                                      "CHEFE DA HORDA",
+                                      0.85f, 0.2f, 1.0f);
+
+            // Borda da barra (roxo)
+            glColor3f(0.5f, 0.0f, 0.9f);
+            glLineWidth(2.0f);
+            glBegin(GL_LINE_LOOP);
+                glVertex2f(bBarX - 2.0f, bBarY - 2.0f);
+                glVertex2f(bBarX + bBarW + 2.0f, bBarY - 2.0f);
+                glVertex2f(bBarX + bBarW + 2.0f, bBarY + bBarH + 2.0f);
+                glVertex2f(bBarX - 2.0f, bBarY + bBarH + 2.0f);
+            glEnd();
+            glLineWidth(1.5f);
+
+            // Barra de HP (roxa → preta quando baixa)
+            float fracHP = (float)bss.vida / (float)BOSS_VIDA_MAXIMA;
+            if (fracHP < 0.0f) fracHP = 0.0f;
+            float hpR = 0.4f + fracHP * 0.2f;
+            float hpG = 0.0f;
+            float hpB = 0.8f + fracHP * 0.1f;
+            desenharBarra(bBarX, bBarY, bBarW, bBarH,
+                          (float)bss.vida, (float)BOSS_VIDA_MAXIMA,
+                          hpR, hpG, hpB,
+                          0.08f, 0.0f, 0.12f);
+
+            // Texto "vida_atual / vida_max" centralizado na barra
+            {
+                char bufB[64];
+                std::snprintf(bufB, sizeof(bufB),
+                              "%d / %d", bss.vida, BOSS_VIDA_MAXIMA);
+                desenharTextoCentralizado(W * 0.5f, bBarY + 4.0f,
+                                          bufB, 1.0f, 1.0f, 1.0f);
+            }
+            break; // apenas um Boss na horda
+        }
+    }
+
+    // --- Mensagens de evento (BOSS APARECEU! / BOSS DERROTADO!) --------------
+    if (g_jogo.tempMensagemBoss > 0.0f) {
+        // Proporção de vida restante da mensagem para fade (de 1→0)
+        float fade = g_jogo.tempMensagemBoss / BOSS_MSG_DURACAO;
+        if (fade > 1.0f) fade = 1.0f;
+
+        const char* msgBoss = "";
+        float mR = 1.0f, mG = 1.0f, mB = 1.0f;
+
+        if (g_jogo.fasePartida == FASE_BOSS) {
+            msgBoss = "BOSS APARECEU!";
+            mR = 1.0f; mG = 0.15f; mB = 1.0f;
+        } else if (g_jogo.fasePartida == FASE_VITORIA) {
+            msgBoss = "BOSS DERROTADO!";
+            mR = 0.1f; mG = 1.0f;  mB = 0.2f;
+        }
+
+        if (msgBoss[0] != '\0') {
+            // Sombra + texto principal com fade de opacidade simulado por cor
+            float rS = mR * fade, gS = mG * fade, bS = mB * fade;
+            desenharTexto(W*0.5f - larguraTexto(msgBoss)*0.5f + 2.0f,
+                          H*0.5f + 30.0f - 2.0f,
+                          msgBoss, 0.0f, 0.0f, 0.0f);
+            desenharTexto(W*0.5f - larguraTexto(msgBoss)*0.5f,
+                          H*0.5f + 30.0f,
+                          msgBoss, rS, gS, bS);
+        }
+    }
+    // =========================================================================
+
     sairModo2D();
 }
 
@@ -1815,6 +2186,7 @@ static void cbIdle() {
         atualizarParticulas(dt);
         atualizarFloatingDamage(dt);
         atualizarSpawn(dt);
+        atualizarBoss(dt);  // timers visuais do Boss (mensagem + entrada)
         g_jogo.houveMorteRecente = false;   // resetar hook KILLEDENEMY
     }
 
