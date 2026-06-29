@@ -297,6 +297,7 @@ struct EstadoDoJogo {
     bool jogoPausado;
 
     bool atirandoAgora;
+    bool pausaManual;             // pause manual via ESC/P (distinto de pausadoParaUpgrade)
 
     // FASE 6 — Menu de progressão
     MenuLevelUp menuAtual;

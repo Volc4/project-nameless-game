@@ -121,6 +121,12 @@ static bool g_cliqueMouse = false;
 static bool g_jogoTerminado = false;
 static int  g_kills         = 0;
 
+// Falas da protagonista — volume e flags de disparo único (reset em inicializarEstadoJogo)
+static const int VOLUME_FALA       = 200;
+static bool g_faladaMagrelas       = false;
+static bool g_faladaCarecas        = false;
+static bool g_faladaFestaZumbi     = false;
+
 // --- Modelo da protagonista Sofia -------------------------------------------
 static ModeloAnimado g_sofia;
 static bool          g_sofiaCarregada = false;
@@ -165,6 +171,7 @@ static void atualizarFloatingDamage(float dt);
 static void desenharCena();
 static void desenharHUD();
 static void desenharMenuLevelUp();
+static void desenharPause();
 static void desenharHitboxDevorar();
 static void desenharProjeteisZumbi();
 static Vetor3D projetarMouseNoMundo(int mx, int my);
@@ -214,6 +221,7 @@ void processarMorteZumbi(EstadoDoJogo& jogo, Zumbi& z) {
             float edz = ep.posicao.z - z.posicao.z;
             if ((edx*edx + edz*edz) <= EXPLOSAO_RAIO * EXPLOSAO_RAIO) {
                 ep.hp -= z.dano;
+                tocarEfeitoComVolume("Sons/Ai.mp3", VOLUME_FALA);
                 ep.temporizadorIframe = ep.duracaoIframe;
                 if (ep.hp <= 0) {
                     ep.hp   = 0;
@@ -512,7 +520,11 @@ static void inicializarEstadoJogo() {
     g_jogo.pausadoParaUpgrade     = false;
     g_jogo.nivelAntesDaEscolha    = 1;
     g_jogo.jogoPausado            = false;
+    g_jogo.pausaManual            = false;
     g_jogo.houveMorteRecente      = false;
+    g_faladaMagrelas   = false;
+    g_faladaCarecas    = false;
+    g_faladaFestaZumbi = false;
     g_jogo.ultimaPosicaoMorte.x = 0.0f;
     g_jogo.ultimaPosicaoMorte.y = 0.0f;
     g_jogo.ultimaPosicaoMorte.z = 0.0f;
@@ -811,6 +823,7 @@ void processarColisaoZumbiJogador_Grade(EstadoDoJogo& jogo,
         if (!z.vivo) continue;
         if (verificarColisao(p.posicao, p.raioColisao, z.posicao, z.raioColisao)) {
             p.hp -= z.dano;
+            tocarEfeitoComVolume("Sons/Ai.mp3", VOLUME_FALA);
             p.temporizadorIframe = p.duracaoIframe;
             if (p.hp <= 0) {
                 p.hp   = 0;
@@ -873,6 +886,7 @@ static void atualizarProjeteisZumbi(float dt) {
             if ((cdx*cdx + cdz*cdz) <= r * r) {
                 pz.ativo = false;
                 p.hp -= pz.dano;
+                tocarEfeitoComVolume("Sons/Ai.mp3", VOLUME_FALA);
                 p.temporizadorIframe = p.duracaoIframe;
                 if (p.hp <= 0) {
                     p.hp   = 0;
@@ -917,6 +931,18 @@ static void atualizarSpawn(float dt) {
     if (g_jogo.jogoPausado) return;
 
     g_jogo.tempoSobrevivido += dt;
+    if (!g_faladaMagrelas && g_jogo.tempoSobrevivido >= 60.0f) {
+        g_faladaMagrelas = true;
+        tocarEfeitoComVolume("Sons/Magrelas.mp3", VOLUME_FALA);
+    }
+    if (!g_faladaCarecas && g_jogo.tempoSobrevivido >= 120.0f) {
+        g_faladaCarecas = true;
+        tocarEfeitoComVolume("Sons/Carecas.mp3", VOLUME_FALA);
+    }
+    if (!g_faladaFestaZumbi && g_jogo.tempoSobrevivido >= 180.0f) {
+        g_faladaFestaZumbi = true;
+        tocarEfeitoComVolume("Sons/FestaZumbi.mp3", VOLUME_FALA);
+    }
     g_jogo.tempoUltimoSpawn += dt;
     if (g_jogo.tempoUltimoSpawn < SPAWN_INTERVALO) return;
     g_jogo.tempoUltimoSpawn = 0.0f;
@@ -1386,6 +1412,74 @@ static void desenharTexto(float x, float y, const char* str,
         glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
 }
 
+// Mede largura em pixels da string no bitmap HELVETICA_18.
+static int larguraTexto(const char* s) {
+    return (int)glutBitmapLength(GLUT_BITMAP_HELVETICA_18,
+                                 (const unsigned char*)s);
+}
+
+// Centraliza horizontalmente em cx.
+static void desenharTextoCentralizado(float cx, float y, const char* s,
+                                      float r, float g, float b) {
+    desenharTexto(cx - larguraTexto(s) * 0.5f, y, s, r, g, b);
+}
+
+// Alinha à direita: borda direita do texto em xDir.
+static void desenharTextoDireita(float xDir, float y, const char* s,
+                                 float r, float g, float b) {
+    desenharTexto(xDir - (float)larguraTexto(s), y, s, r, g, b);
+}
+
+// Sombra 1px (cópia escura deslocada) + texto colorido sobre ela.
+static void desenharTextoSombra(float x, float y, const char* s,
+                                float r, float g, float b) {
+    desenharTexto(x + 1.0f, y - 1.0f, s, 0.0f, 0.0f, 0.0f);
+    desenharTexto(x, y, s, r, g, b);
+}
+
+// Quebra texto por palavras dentro de larguraMax pixels, descendo alturaLinha por linha.
+// Retorna o número de linhas desenhadas.
+static int desenharTextoQuebrado(float x, float yTopo, float larguraMax,
+                                 float alturaLinha, const char* s,
+                                 float r, float g, float b) {
+    char copia[512];
+    std::strncpy(copia, s, 511);
+    copia[511] = '\0';
+
+    char linha[512];
+    linha[0] = '\0';
+    int nLinhas = 0;
+    float y = yTopo;
+
+    char* tok = std::strtok(copia, " ");
+    while (tok != NULL) {
+        char tentativa[512];
+        if (linha[0] == '\0') {
+            std::strncpy(tentativa, tok, 511);
+        } else {
+            std::snprintf(tentativa, sizeof(tentativa), "%s %s", linha, tok);
+        }
+        tentativa[511] = '\0';
+
+        if (larguraTexto(tentativa) <= (int)larguraMax || linha[0] == '\0') {
+            std::strncpy(linha, tentativa, 511);
+            linha[511] = '\0';
+        } else {
+            desenharTexto(x, y, linha, r, g, b);
+            y -= alturaLinha;
+            ++nLinhas;
+            std::strncpy(linha, tok, 511);
+            linha[511] = '\0';
+        }
+        tok = std::strtok(NULL, " ");
+    }
+    if (linha[0] != '\0') {
+        desenharTexto(x, y, linha, r, g, b);
+        ++nLinhas;
+    }
+    return nLinhas;
+}
+
 static void desenharBarra(float x, float y, float w, float h,
                            float valor, float maximo,
                            float rF, float gF, float bF,
@@ -1410,82 +1504,126 @@ static void desenharHUD() {
     entrarModo2D();
 
     Jogador& p = g_jogo.protagonista;
-
     const float W = (float)g_winW, H = (float)g_winH;
 
+    // --- Constantes de layout (ajuste aqui para reposicionar tudo de uma vez) ---
+    const float MARG_E    = 10.0f;   // margem esquerda
+    const float MARG_D    = 12.0f;   // margem direita
+    const float BARRA_W   = 200.0f;  // largura de todas as barras
+    const float BARRA_HP  = 18.0f;   // altura barra HP
+    const float BARRA_T   = 18.0f;   // altura barra Tensão
+    const float BARRA_XP  = 12.0f;   // altura barra XP
+    const float PASSO     = 30.0f;   // espaçamento vertical entre barras (bottom)
+    const float ROT_DENT  = 14.0f;   // offset Y do rótulo dentro da barra
+
+    // Posições Y (bottom de cada barra; Y cresce para cima)
+    float yHP  = H - PASSO;           // H - 30
+    float yT   = yHP - PASSO;         // H - 60
+    float yXP  = yT  - PASSO;         // H - 90
+    float yDev = yXP - BARRA_XP - PASSO + 2.0f; // H - 120
+
+    // Painel semi-transparente atrás das barras (opcional: remove se não quiser)
+    {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glColor4f(0.0f, 0.0f, 0.0f, 0.40f);
+        glBegin(GL_QUADS);
+            glVertex2f(MARG_E - 4.0f, yDev - 4.0f);
+            glVertex2f(MARG_E + BARRA_W + 4.0f, yDev - 4.0f);
+            glVertex2f(MARG_E + BARRA_W + 4.0f, H);
+            glVertex2f(MARG_E - 4.0f, H);
+        glEnd();
+        glDisable(GL_BLEND);
+    }
+
+    char buf[96];
+
     // Barra de HP
-    desenharBarra(10.0f, H - 30.0f, 200.0f, 18.0f,
+    desenharBarra(MARG_E, yHP, BARRA_W, BARRA_HP,
                   (float)p.hp, (float)p.hpMaximo,
                   0.9f, 0.1f, 0.1f,   0.3f, 0.0f, 0.0f);
-    char buf[64];
     std::snprintf(buf, sizeof(buf), "HP %d/%d", p.hp, p.hpMaximo);
-    desenharTexto(12.0f, H - 27.0f, buf, 1.0f, 1.0f, 1.0f);
+    desenharTextoSombra(MARG_E + 2.0f, yHP + ROT_DENT, buf, 1.0f, 1.0f, 1.0f);
 
     // Barra de Tensão
-    desenharBarra(10.0f, H - 60.0f, 200.0f, 18.0f,
-                  g_jogo.stand.tensaoAtual, maxTensaoDoNivel(g_jogo.protagonista.upgrades.niveis[TENSAO_UP]),
+    desenharBarra(MARG_E, yT, BARRA_W, BARRA_T,
+                  g_jogo.stand.tensaoAtual,
+                  maxTensaoDoNivel(g_jogo.protagonista.upgrades.niveis[TENSAO_UP]),
                   g_jogo.stand.emSobrecarga ? 1.0f : 0.3f,
                   g_jogo.stand.emSobrecarga ? 0.3f : 0.5f,
                   0.0f,
                   0.1f, 0.1f, 0.3f);
-    std::snprintf(buf, sizeof(buf), "Tensão %.0f%%",
-                  g_jogo.stand.tensaoAtual);
-    desenharTexto(12.0f, H - 57.0f, buf, 1.0f, 1.0f, 1.0f);
+    std::snprintf(buf, sizeof(buf), "Tensao %.0f%%", g_jogo.stand.tensaoAtual);
+    desenharTextoSombra(MARG_E + 2.0f, yT + ROT_DENT, buf, 1.0f, 1.0f, 1.0f);
 
     // Barra de XP
-    desenharBarra(10.0f, H - 90.0f, 200.0f, 12.0f,
+    desenharBarra(MARG_E, yXP, BARRA_W, BARRA_XP,
                   (float)p.xpAtual, (float)p.xpParaProximoNivel,
                   0.2f, 0.8f, 1.0f,   0.05f, 0.1f, 0.2f);
     std::snprintf(buf, sizeof(buf), "Nv %d  XP %d/%d",
                   p.nivel, p.xpAtual, p.xpParaProximoNivel);
-    desenharTexto(12.0f, H - 88.0f, buf, 0.7f, 0.9f, 1.0f);
+    desenharTextoSombra(MARG_E + 2.0f, yXP + 8.0f, buf, 0.7f, 0.9f, 1.0f);
 
     // Status do Devorar
     {
         Entidade& st = g_jogo.stand;
         if (st.temporizadorDevorar > 0.0f) {
-            desenharTexto(10.0f, H - 120.0f, "DEVORANDO!", 1.0f, 0.15f, 0.0f);
+            desenharTextoSombra(MARG_E, yDev, "DEVORANDO!", 1.0f, 0.15f, 0.0f);
         } else if (st.temporizadorCooldownDevorar > 0.0f) {
             std::snprintf(buf, sizeof(buf), "Devorar [recarga %.1fs]",
                           st.temporizadorCooldownDevorar);
-            desenharTexto(10.0f, H - 120.0f, buf, 0.55f, 0.40f, 0.40f);
+            desenharTextoSombra(MARG_E, yDev, buf, 0.55f, 0.40f, 0.40f);
         } else {
-            desenharTexto(10.0f, H - 120.0f, "ESPACO: Devorar [Pronto]", 0.85f, 0.85f, 0.85f);
+            desenharTextoSombra(MARG_E, yDev, "ESPACO: Devorar [Pronto]", 0.75f, 0.75f, 0.75f);
         }
     }
 
-    // Temporizador (MM:SS) — canto superior direito
-    int t_total = (int)g_jogo.tempoSobrevivido;
-    int t_min   = t_total / 60;
-    int t_sec   = t_total % 60;
-    std::snprintf(buf, sizeof(buf), "%02d:%02d", t_min, t_sec);
-    desenharTexto(W - 70.0f, H - 20.0f, buf, 1.0f, 1.0f, 0.6f);
-
-    // Contador de kills — abaixo do timer
+    // --- Canto superior direito: timer e kills alinhados à direita ---
+    float xDir = W - MARG_D;
+    {
+        int t_total = (int)g_jogo.tempoSobrevivido;
+        int t_min   = t_total / 60;
+        int t_sec   = t_total % 60;
+        std::snprintf(buf, sizeof(buf), "%02d:%02d", t_min, t_sec);
+        desenharTextoSombra(xDir - (float)larguraTexto(buf), H - 22.0f,
+                            buf, 1.0f, 1.0f, 0.6f);
+    }
     std::snprintf(buf, sizeof(buf), "Kills: %d", g_kills);
-    desenharTexto(W - 80.0f, H - 45.0f, buf, 1.0f, 0.5f, 0.5f);
+    desenharTextoSombra(xDir - (float)larguraTexto(buf), H - 46.0f,
+                        buf, 1.0f, 0.5f, 0.5f);
 
-    // Skills equipadas (slots)
-    float sx = 10.0f, sy = 10.0f;
-    for (int i = 0; i < MAX_SLOTS_SKILL; ++i) {
-        const SlotSkill& sl = g_skills.slot(i);
-        if (!sl.ativo) continue;
-        const char* nome = SkillFactory::nomeDe(sl.build.id);
-        std::snprintf(buf, sizeof(buf), "[%d] %s", i+1, nome);
-        desenharTexto(sx, sy, buf, 0.6f, 1.0f, 0.6f);
-        sy += 22.0f;
+    // --- Skills equipadas (canto inferior esquerdo, nomes truncados com ...) ---
+    {
+        float sx = MARG_E, sy = 10.0f;
+        const int LIM_PX = 180;
+        for (int i = 0; i < MAX_SLOTS_SKILL; ++i) {
+            const SlotSkill& sl = g_skills.slot(i);
+            if (!sl.ativo) continue;
+            const char* nome = SkillFactory::nomeDe(sl.build.id);
+            char nomeT[48];
+            std::strncpy(nomeT, nome, 47);
+            nomeT[47] = '\0';
+            std::snprintf(buf, sizeof(buf), "[%d] %s", i+1, nomeT);
+            // Reduz até caber, acrescentando reticências
+            while (larguraTexto(buf) > LIM_PX && std::strlen(nomeT) > 0) {
+                nomeT[std::strlen(nomeT) - 1] = '\0';
+                std::snprintf(buf, sizeof(buf), "[%d] %s...", i+1, nomeT);
+            }
+            desenharTextoSombra(sx, sy, buf, 0.6f, 1.0f, 0.6f);
+            sy += 22.0f;
+        }
     }
 
-    // Sobrecarga
+    // --- Sobrecarga (centralizado) ---
     if (g_jogo.stand.emSobrecarga) {
-        desenharTexto(W * 0.5f - 80.0f, H * 0.5f + 60.0f,
-                      "SOBRECARGA!", 1.0f, 0.2f, 0.0f);
+        desenharTextoCentralizado(W * 0.5f, H * 0.5f + 60.0f,
+                                  "SOBRECARGA!", 1.0f, 0.2f, 0.0f);
     }
 
-    // Game Over
+    // --- Game Over (centralizado) ---
     if (g_jogoTerminado) {
-        desenharTexto(W * 0.5f - 80.0f, H * 0.5f,
-                      "GAME OVER — [R] Reiniciar", 1.0f, 0.2f, 0.2f);
+        desenharTextoCentralizado(W * 0.5f, H * 0.5f,
+                                  "GAME OVER  [R] Reiniciar", 1.0f, 0.2f, 0.2f);
     }
 
     sairModo2D();
@@ -1500,10 +1638,11 @@ static void desenharMenuLevelUp() {
 
     entrarModo2D();
 
+    const float W = (float)g_winW, H = (float)g_winH;
+
     // Fundo semi-transparente
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    const float W = (float)g_winW, H = (float)g_winH;
     glColor4f(0.0f, 0.0f, 0.0f, 0.65f);
     glBegin(GL_QUADS);
         glVertex2f(0, 0); glVertex2f(W, 0);
@@ -1511,51 +1650,113 @@ static void desenharMenuLevelUp() {
     glEnd();
     glDisable(GL_BLEND);
 
-    desenharTexto(W * 0.5f - 80.0f, H - 120.0f,
-                  "LEVEL UP! Escolha uma melhoria:", 1.0f, 0.9f, 0.2f);
+    desenharTextoCentralizado(W * 0.5f, H - 80.0f,
+                              "LEVEL UP!  Escolha uma melhoria:", 1.0f, 0.9f, 0.2f);
 
     MenuLevelUp& menu = g_jogo.menuAtual;
-    float cardW = 260.0f, cardH = 100.0f;
-    float totalW = menu.quantidade * cardW + (menu.quantidade - 1) * 20.0f;
-    float startX = (W - totalW) * 0.5f;
-    float startY = H * 0.5f - cardH * 0.5f;
+
+    // Layout do card
+    const float PADDING  = 12.0f;   // margem interna
+    const float cardW    = 270.0f;  // largura do card
+    const float cardH    = 130.0f;  // altura — acomoda faixa de título + 3 linhas + subtítulo
+    const float TITULO_H = 28.0f;   // faixa de título colorida no topo do card
+    const float LINHA_H  = 20.0f;   // altura de linha do texto quebrado
+    const float GAPCARD  = 20.0f;   // espaço entre cards
+
+    const float totalW  = menu.quantidade * cardW + (menu.quantidade - 1) * GAPCARD;
+    const float startX  = (W - totalW) * 0.5f;
+    const float startY  = H * 0.5f - cardH * 0.5f;
 
     for (int i = 0; i < menu.quantidade; ++i) {
         LevelUpChoice& c = menu.escolhas[i];
-        float cx = startX + i * (cardW + 20.0f);
+        const float cx = startX + i * (cardW + GAPCARD);
 
-        // Cor da raridade
         float rR, rG, rB;
         corRaridade(c.raridade, rR, rG, rB);
 
         // Fundo do card
-        glColor3f(0.1f, 0.1f, 0.15f);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glColor4f(0.08f, 0.08f, 0.14f, 0.96f);
         glBegin(GL_QUADS);
-            glVertex2f(cx, startY);
+            glVertex2f(cx,       startY);
             glVertex2f(cx+cardW, startY);
             glVertex2f(cx+cardW, startY+cardH);
-            glVertex2f(cx, startY+cardH);
+            glVertex2f(cx,       startY+cardH);
         glEnd();
-        // Borda colorida
+
+        // Faixa de título colorida (topo do card)
+        glColor4f(rR * 0.35f, rG * 0.35f, rB * 0.35f, 0.92f);
+        glBegin(GL_QUADS);
+            glVertex2f(cx,       startY + cardH - TITULO_H);
+            glVertex2f(cx+cardW, startY + cardH - TITULO_H);
+            glVertex2f(cx+cardW, startY + cardH);
+            glVertex2f(cx,       startY + cardH);
+        glEnd();
+        glDisable(GL_BLEND);
+
+        // Borda dupla na cor da raridade (mais visível)
         glColor3f(rR, rG, rB);
         glBegin(GL_LINE_LOOP);
-            glVertex2f(cx, startY);
+            glVertex2f(cx,       startY);
             glVertex2f(cx+cardW, startY);
             glVertex2f(cx+cardW, startY+cardH);
-            glVertex2f(cx, startY+cardH);
+            glVertex2f(cx,       startY+cardH);
+        glEnd();
+        glBegin(GL_LINE_LOOP);
+            glVertex2f(cx+1.0f,       startY+1.0f);
+            glVertex2f(cx+cardW-1.0f, startY+1.0f);
+            glVertex2f(cx+cardW-1.0f, startY+cardH-1.0f);
+            glVertex2f(cx+1.0f,       startY+cardH-1.0f);
         glEnd();
 
-        // Número da tecla
-        char buf[4];
+        // Número da tecla — centralizado na faixa de título
+        char buf[8];
         std::snprintf(buf, sizeof(buf), "[%d]", i+1);
-        desenharTexto(cx + 8.0f, startY + cardH - 22.0f, buf, rR, rG, rB);
+        desenharTextoCentralizado(cx + cardW * 0.5f,
+                                  startY + cardH - TITULO_H + 6.0f,
+                                  buf, rR, rG, rB);
 
-        // Descrição e subtítulo
-        desenharTexto(cx + 8.0f, startY + 60.0f,
-                      c.descricao, 1.0f, 1.0f, 1.0f);
-        desenharTexto(cx + 8.0f, startY + 35.0f,
-                      c.subtitulo, 0.7f, 0.7f, 0.8f);
+        // Descrição quebrada — área útil abaixo da faixa de título
+        const float textoW = cardW - 2.0f * PADDING;
+        const float descY  = startY + cardH - TITULO_H - LINHA_H;
+        int nLinhas = desenharTextoQuebrado(cx + PADDING, descY, textoW,
+                                            LINHA_H, c.descricao,
+                                            1.0f, 1.0f, 1.0f);
+
+        // Subtítulo logo abaixo das linhas de descrição
+        float subY = descY - (float)nLinhas * LINHA_H;
+        if (subY < startY + 4.0f) subY = startY + 4.0f;
+        desenharTextoCentralizado(cx + cardW * 0.5f, subY,
+                                  c.subtitulo, 0.70f, 0.70f, 0.85f);
     }
+
+    sairModo2D();
+}
+
+// Overlay de pause manual — escurece a tela e exibe "PAUSADO".
+// Só é chamado quando g_jogo.pausaManual é true (e, por construção,
+// nunca ao mesmo tempo que pausadoParaUpgrade).
+static void desenharPause() {
+    if (!g_jogo.pausaManual) return;
+
+    entrarModo2D();
+
+    const float W = (float)g_winW, H = (float)g_winH;
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glColor4f(0.0f, 0.0f, 0.0f, 0.55f);
+    glBegin(GL_QUADS);
+        glVertex2f(0, 0); glVertex2f(W, 0);
+        glVertex2f(W, H); glVertex2f(0, H);
+    glEnd();
+    glDisable(GL_BLEND);
+
+    desenharTextoCentralizado(W * 0.5f, H * 0.5f + 18.0f,
+                              "PAUSADO", 1.0f, 1.0f, 0.35f);
+    desenharTextoCentralizado(W * 0.5f, H * 0.5f - 10.0f,
+                              "[ESC] ou [P] para continuar", 0.75f, 0.75f, 0.75f);
 
     sairModo2D();
 }
@@ -1592,6 +1793,7 @@ static void cbDisplay() {
     desenharCena();
     desenharHUD();
     desenharMenuLevelUp();
+    desenharPause();
     glutSwapBuffers();
 }
 
@@ -1681,7 +1883,7 @@ static void cbKeyboard(unsigned char key, int /*x*/, int /*y*/) {
                                           g_jogo.protagonista,
                                           g_jogo.arquetipoArma);
                     g_jogo.pausadoParaUpgrade = false;
-                    g_jogo.jogoPausado        = false;
+                    g_jogo.jogoPausado        = g_jogo.pausaManual;
                 }
             }
             break;
@@ -1712,9 +1914,17 @@ static void cbKeyboard(unsigned char key, int /*x*/, int /*y*/) {
             }
             break;
 
-        // Sair
-        case 27:   // ESC
-            std::exit(0);
+        // Pause manual — ESC e P (maiúsculo) alternam o pause.
+        // Lowercase 'p' fica reservado para calibração de pistola (#ifdef DEBUG_PISTOLA).
+        // Não alterna se estiver no menu de level-up ou em game over.
+        case 27:    // ESC
+        case 'P':
+            if (!g_jogo.pausadoParaUpgrade && !g_jogoTerminado) {
+                g_jogo.pausaManual = !g_jogo.pausaManual;
+                g_jogo.jogoPausado  = g_jogo.pausaManual;
+                if (g_jogo.pausaManual) pausarMusicaFundo();
+                else                    retomarMusicaFundo();
+            }
             break;
 
 #ifdef DEBUG_PISTOLA
