@@ -33,26 +33,46 @@ inline void retomarMusicaFundo() {
 }
 
 // =======================================================
-// EFEITOS SONOROS (Pronto para o futuro)
+// EFEITOS SONOROS
+// Volume: 0 (mudo) a 1000 (máximo)
 // =======================================================
-inline void tocarEfeito(const char* caminhoSom) {
+inline void tocarEfeitoComVolume(const char* caminhoSom, int volume) {
     static int contadorCanal = 0;
-    // Sistema de pool circular: recicla 10 canais (0 a 9) para evitar vazamento de memória/MCI
     contadorCanal = (contadorCanal + 1) % 10;
 
     std::stringstream ss;
     ss << "sfx_" << contadorCanal;
     std::string alias = ss.str();
 
-    // Fecha o canal correspondente antes de sobrescrevê-lo
-    std::string comandoClose = std::string("close ") + alias;
-    mciSendString(comandoClose.c_str(), NULL, 0, NULL);
+    mciSendString((std::string("close ") + alias).c_str(), NULL, 0, NULL);
+    mciSendString((std::string("open \"") + caminhoSom + "\" type mpegvideo alias " + alias).c_str(), NULL, 0, NULL);
+    mciSendString((std::string("setaudio ") + alias + " volume to " + std::to_string(volume)).c_str(), NULL, 0, NULL);
+    mciSendString((std::string("play ") + alias).c_str(), NULL, 0, NULL);
+}
 
-    std::string comandoOpen = std::string("open \"") + std::string(caminhoSom) + "\" type mpegvideo alias " + alias;
-    mciSendString(comandoOpen.c_str(), NULL, 0, NULL);
+inline void tocarEfeito(const char* caminhoSom) {
+    tocarEfeitoComVolume(caminhoSom, 150);
+}
 
-    std::string comandoPlay = std::string("play ") + alias;
-    mciSendString(comandoPlay.c_str(), NULL, 0, NULL);
+// Sorteia e toca um dos três sons de morte de zumbi em volume reduzido
+inline void tocarMorteZumbi() {
+    int sorteio = rand() % 3;
+    const char* sons[] = { "Sons/morte1.mp3", "Sons/morte2.mp3", "Sons/morte3.mp3" };
+    tocarEfeitoComVolume(sons[sorteio], 50);
+}
+
+// Toca a música de derrota em volume reduzido (alias fixo para poder parar depois)
+inline void tocarGameOver() {
+    mciSendString("stop sfx_gameover", NULL, 0, NULL);
+    mciSendString("close sfx_gameover", NULL, 0, NULL);
+    mciSendString("open \"Sons/gameover.mp3\" type mpegvideo alias sfx_gameover", NULL, 0, NULL);
+    mciSendString("setaudio sfx_gameover volume to 50", NULL, 0, NULL);
+    mciSendString("play sfx_gameover", NULL, 0, NULL);
+}
+
+inline void pararGameOver() {
+    mciSendString("stop sfx_gameover", NULL, 0, NULL);
+    mciSendString("close sfx_gameover", NULL, 0, NULL);
 }
 
 #endif // AUDIO_H

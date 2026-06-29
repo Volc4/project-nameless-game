@@ -33,21 +33,6 @@ inline SkillData buildDisparo() {
     return buildBase();
 }
 
-// --- Míssil Teleguiado Vampírico: Projectile + Homing + Stand + Drain ------
-inline SkillData buildMissilVampirico() {
-    SkillData s = _novaSkill();
-    s.forma.tipo            = FORMA_PROJECTILE;
-    s.forma.raioColisao     = 0.20f;
-    s.movimento.tipo        = MOV_HOMING;
-    s.movimento.velocidade  = 22.0f;
-    s.movimento.taxaCorrecao= 0.6f;
-    s.origem.tipo           = ORIG_STAND;
-    s.efeitos[0].tipo  = EFE_DAMAGE; s.efeitos[0].valor = 7;
-    s.efeitos[1].tipo  = EFE_DRAIN;  s.efeitos[1].valor = 3;
-    s.numEfeitos = 2;
-    return s;
-}
-
 // --- Pilar Celestial de Fogo: Area + Fall + RandomMap + Burn ----------------
 inline SkillData buildPilarFogo() {
     SkillData s = _novaSkill();
@@ -134,7 +119,7 @@ inline SkillData buildCadeiaEletrica() {
 // ---------------------------------------------------------------------------
 inline void registrarSkillsPadrao() {
     RegistrarSkill("Disparo",            buildDisparo());
-    // (As Armas Inteligentes — MissilVampirico, MissilGuiado, EspiritoCacador —
+    // (As Armas Inteligentes — MissilVampirico, MissilGuiado, BombaGuiada —
     //  são registradas por registrarArmasInteligentes() em ArmaInteligente.h,
     //  com builds explícitas por nível. Chamado em seguida no bootstrap.)
     RegistrarSkill("PilarFogo",          buildPilarFogo());

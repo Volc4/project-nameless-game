@@ -95,11 +95,20 @@ private:
     float tempoAnimacao      = 0.0f;
     bool  emLoop             = true;
     float velocidadeAnimacao = 1.0f; // 1=normal, 0=congelado, -1=reversa
+    bool        mesclagemAtiva          = false;
+    int         animacaoSecundaria      = -1;
+    float       tempoAnimacaoSecundaria = 0.0f;
+    std::string ossoDivisorMescla       = "mixamorig:Spine";
 
     // remoção de root motion: zera TODA translação do nó raiz animado
     bool        removerRootMotion    = true;
     std::string nomeOssoRaiz         = "mixamorig:Hips";
     bool        _rootBoneEncontrado  = false; // reset a cada frame antes de percorrerHierarquia
+
+    // ---- Bone socket — prop externo segue este osso -------------------------
+    std::string nomeOssoMao    = "mixamorig:RightHand";
+    glm::mat4   _globalMao     = glm::mat4(1.0f); // atualizado por percorrerHierarquia
+    bool        _maoEncontrada = false;            // resetado a cada calcularPose()
 
     // texturas embutidas já carregadas, indexadas por ponteiro aiTexture
     std::map<const aiTexture*, GLuint> cacheTexturasEmbutidas;
@@ -422,6 +431,10 @@ private:
 
         glm::mat4 global = paiTransform * transformacaoNo;
 
+        // Bone socket: captura a global do osso da mão para uso externo (ex.: pistola).
+        // NÃO usar ossos[idx].transformacaoFinal — ela já tem o offset embutido.
+        if (nome == nomeOssoMao) { _globalMao = global; _maoEncontrada = true; }
+
         auto it = mapaOssos.find(nome);
         if (it != mapaOssos.end()) {
             int idx = it->second;
@@ -472,6 +485,7 @@ private:
         if (animacaoAtual < 0 || (unsigned)animacaoAtual >= scene->mNumAnimations) {
             // sem animação ativa: ossos em pose neutra (identidade da hierarquia)
             const aiNode* raiz = scene->mRootNode;
+            _maoEncontrada = false;
             percorrerHierarquia(raiz, glm::mat4(1.0f), 0.0, nullptr);
             aplicarSkinning();
             return;
@@ -490,6 +504,7 @@ private:
         double tempoTicks = t * tps;
 
         _rootBoneEncontrado = false; // reseta a cada frame para detectar o root bone
+        _maoEncontrada = false;
         percorrerHierarquia(scene->mRootNode, glm::mat4(1.0f), tempoTicks, anim);
         aplicarSkinning();
     }
@@ -568,12 +583,24 @@ public:
     void congelarNoFrame(int frame) {
         velocidadeAnimacao = 0.0f;
         if (scene && animacaoAtual >= 0 && (unsigned)animacaoAtual < scene->mNumAnimations) {
-            const aiAnimation* anim = scene->mAnimations[animacaoAtual];
-            double tps = (anim->mTicksPerSecond != 0.0) ? anim->mTicksPerSecond : 25.0;
-            // tempo = frame / ticks_por_segundo
-            tempoAnimacao = (float)(frame / tps);
+            
+            // O padrão do Mixamo e de motores de jogos é 30 Frames por Segundo.
+            // Para encontrar o segundo exato do frame, dividimos por 30.0f.
+            // (Se você animou a mão no Blender a 24fps, mude o 30.0f para 24.0f)
+            float tempoEmSegundos = (float)frame / 30.0f;
+            
+            tempoAnimacao = tempoEmSegundos;
+
+            // Congela também a animação do tronco caso ela esteja atirando parada
+            if (mesclagemAtiva) {
+                tempoAnimacaoSecundaria = tempoEmSegundos;
+            }
+            
         } else {
             tempoAnimacao = 0.0f;
+            if (mesclagemAtiva) {
+                tempoAnimacaoSecundaria = 0.0f;
+            }
         }
     }
 
@@ -674,6 +701,32 @@ public:
 
     const std::map<std::string,int>& animacoesDisponiveis() const {
         return mapaAnimacoes;
+    }
+
+    // -------------------------------------------------------------------------
+    //  Bone socket — prop externo segue o osso da mão.
+    //
+    //  Uso típico (em Main.cpp, após renderizar() da Sofia, dentro do mesmo
+    //  glPushMatrix que já tem as transforms dela):
+    //
+    //    glPushMatrix();
+    //    glMultMatrixf(glm::value_ptr(g_sofia.obterMatrizSocketMao()));
+    //    /* offset de ajuste fino (translate/rotate/scale) */
+    //    g_pistola.renderizar();
+    //    glPopMatrix();
+    //
+    //  obterMatrizSocketMao() = transformacaoGlobalInversa * globalDaMao
+    //  (mesmo espaço em que os vértices skinados vivem).
+    // -------------------------------------------------------------------------
+    void definirOssoMao(const std::string& n) { nomeOssoMao = n; }
+    bool temMao() const { return _maoEncontrada; }
+    glm::mat4 obterMatrizSocketMao() const {
+        return transformacaoGlobalInversa * _globalMao;
+    }
+    void listarOssos() const {
+        std::cout << "[Socket] Ossos no rig (" << mapaOssos.size() << "):\n";
+        for (const auto& par : mapaOssos)
+            std::cout << "  \"" << par.first << "\"\n";
     }
 
     // Força uma textura PNG/JPG externa em todas as malhas (útil quando o

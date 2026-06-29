@@ -263,7 +263,7 @@ private:
     // -----------------------------------------------------------------------
     void _spawnarInstancias(SlotSkill& sl, EstadoDoJogo& jogo, Vetor3D alvo) {
         const SkillData& s = sl.build;
-        Vetor3D origem     = jogo.stand.posicao;   // ORIG_STAND padrão
+        Vetor3D origem     = jogo.posicaoPistola;   // projéteis manuais saem da pistola
         Vetor3D dirBase    = obterDirecaoNormalizada(origem, alvo);
 
         int n = (s.forma.quantidade > 0 ? s.forma.quantidade : 1);
@@ -519,8 +519,9 @@ inline void _atualizarEmitter(SlotSkill& sl, EstadoDoJogo& jogo,
     if (sl.cooldownRestante <= 0.0f) {
         sl.cooldownRestante = (s.cooldown > 0.0f) ? s.cooldown : 1.0f;
 
-        // Beam: sobrecarga bloqueia a emissão (laser pede tensão contínua).
-        if (s.forma.tipo == FORMA_BEAM && jogo.stand.emSobrecarga) return;
+        // Beam e armas automáticas homing: sobrecarga bloqueia a emissão.
+        if (jogo.stand.emSobrecarga &&
+            (s.forma.tipo == FORMA_BEAM || s.movimento.tipo == MOV_HOMING)) return;
 
         Vetor3D origem = jogo.stand.posicao;
 
@@ -542,13 +543,53 @@ inline void _atualizarEmitter(SlotSkill& sl, EstadoDoJogo& jogo,
 
         int n = (s.forma.quantidade > 0 ? s.forma.quantidade : 1);
 
+        // Para skills homing com N projéteis: cada míssil recebe um zumbi distinto.
+        // Busca os N zumbis mais próximos sem repetição; se faltar zumbi, reutiliza o mais próximo.
+        const int MAX_MISSEIS_LOTE = 9; // 3 armas × nível 3
+        int alvosHoming[MAX_MISSEIS_LOTE];
+        for (int ai = 0; ai < MAX_MISSEIS_LOTE; ++ai) alvosHoming[ai] = idAlvoProx;
+
+        if (s.movimento.tipo == MOV_HOMING && n > 1) {
+            int jaAtrib[MAX_MISSEIS_LOTE];
+            int qtdAtrib = 0;
+            int nBusca = (n < MAX_MISSEIS_LOTE) ? n : MAX_MISSEIS_LOTE;
+            for (int mi = 0; mi < nBusca; ++mi) {
+                int melhor = -1;
+                float melhorD2 = 1e30f;
+                for (int k = 0; k < (int)jogo.horda.size(); ++k) {
+                    if (!jogo.horda[k].vivo) continue;
+                    bool jaUsado = false;
+                    for (int t = 0; t < qtdAtrib; ++t)
+                        if (jaAtrib[t] == k) { jaUsado = true; break; }
+                    if (jaUsado) continue;
+                    float dxk = jogo.horda[k].posicao.x - origem.x;
+                    float dzk = jogo.horda[k].posicao.z - origem.z;
+                    float d2  = dxk*dxk + dzk*dzk;
+                    if (d2 < melhorD2) { melhorD2 = d2; melhor = k; }
+                }
+                alvosHoming[mi] = (melhor >= 0) ? melhor : idAlvoProx;
+                if (melhor >= 0) jaAtrib[qtdAtrib++] = melhor;
+            }
+        }
+
         Vetor3D dirBase = obterDirecaoNormalizada(origem, alvo);
-        float inicio    = -((n - 1) * 0.5f) * s.forma.spreadAngulo;
 
         for (int i = 0; i < n; ++i) {
-            float dx = dirBase.x, dz = dirBase.z;
-            if (n > 1) _rotacionarXZ(dx, dz, inicio + i * s.forma.spreadAngulo);
-            Vetor3D dir = {dx, 0.0f, dz};
+            // Para homing: direção e alvo individuais por míssil.
+            // Para outros: leque/spread padrão.
+            Vetor3D dir = dirBase;
+            int idAlvoMissil = idAlvoProx;
+
+            if (s.movimento.tipo == MOV_HOMING) {
+                idAlvoMissil = (i < MAX_MISSEIS_LOTE) ? alvosHoming[i] : idAlvoProx;
+                if (idAlvoMissil >= 0)
+                    dir = obterDirecaoNormalizada(origem, jogo.horda[idAlvoMissil].posicao);
+            } else {
+                float dx2 = dirBase.x, dz2 = dirBase.z;
+                float inicio = -((n - 1) * 0.5f) * s.forma.spreadAngulo;
+                if (n > 1) _rotacionarXZ(dx2, dz2, inicio + i * s.forma.spreadAngulo);
+                dir.x = dx2; dir.y = 0.0f; dir.z = dz2;
+            }
 
             RuntimeSkill r;
             zerarRuntime(r);
@@ -556,12 +597,10 @@ inline void _atualizarEmitter(SlotSkill& sl, EstadoDoJogo& jogo,
             r.ativo              = true;
             r.posicao            = origem;
             r.direcao            = dir;
-            r.anguloAtual        = std::atan2(dir.z, dir.x); // para FORMA_ARC apontar na mira
+            r.anguloAtual        = std::atan2(dir.z, dir.x);
             r.centro             = origem;
-            r.alvo               = alvo;
-            r.idAlvo             = -1;
-            if (s.movimento.tipo == MOV_HOMING)
-                r.idAlvo = idAlvoProx;
+            r.alvo               = (idAlvoMissil >= 0) ? jogo.horda[idAlvoMissil].posicao : alvo;
+            r.idAlvo             = idAlvoMissil;
             r.tempoVida          = (s.forma.duracao > 0.0f) ? s.forma.duracao : 0.0f;
             r.dano               = (s.numEfeitos > 0) ? s.efeitos[0].valor : 1;
             r.raioColisao        = s.forma.raioColisao;

@@ -24,6 +24,7 @@
 // ===========================================================================
 
 #include "SkillTypes.h"
+#include <cmath>   // std::atan2
 
 // ---------------------------------------------------------------------------
 // CONTRATO DE PRIMITIVAS (definidas em Main.cpp, onde o GL existe).
@@ -52,6 +53,13 @@ void desenharArco3D(float cx, float y, float cz,
                     float anguloCentral, float meiaAbertura,
                     float r, float g, float b);               // Arc/Meia-Lua
 
+// Paralelepípedo orientado pela direção — usado pelas 3 Armas Inteligentes.
+//   cx, cy, cz : centro XYZ do projétil (Y vem de r.posicao.y para seguir a origem)
+//   yaw        : atan2(direcao.z, direcao.x) — orienta o eixo longo
+//   cr/cg/cb   : cor base da arma (definida em FormaData.corR/G/B)
+void desenharMissilOrientado3D(float cx, float cy, float cz, float yaw,
+                                float cr, float cg, float cb);
+
 // ---------------------------------------------------------------------------
 // desenharSkill — despacho de renderização por FormaType. Lê cor/parâmetros
 //   da SkillData (componente Forma) e posição/ângulo da instância runtime.
@@ -61,21 +69,25 @@ void desenharArco3D(float cx, float y, float cz,
 inline void desenharSkill(const SkillData& s, const RuntimeSkill& r) {
     if (!r.ativo) return;
 
-    const float BASE_Y = 0.5f;
-
     switch (s.forma.tipo) {
         case FORMA_PROJECTILE:
         case FORMA_CONE:
         case FORMA_RING:
         case FORMA_PRISM: {
                 float tam = r.raioColisao * 0.8f;
-                // Cor custom se qualquer canal for não-nulo; senão amarelo padrão.
+                float py  = r.posicao.y;   // altura real da instância (origem da pistola ou do fantasma)
                 bool temCor = (s.forma.corR > 0.001f ||
                                s.forma.corG > 0.001f ||
                                s.forma.corB > 0.001f);
-                if (temCor) {
+                // Armas Inteligentes: homing + cor definida → paralelepípedo orientado.
+                bool ehMissil = (temCor && s.movimento.tipo == MOV_HOMING);
+                if (ehMissil) {
+                    float yaw = std::atan2(r.direcao.z, r.direcao.x);
+                    desenharMissilOrientado3D(r.posicao.x, py, r.posicao.z, yaw,
+                                              s.forma.corR, s.forma.corG, s.forma.corB);
+                } else if (temCor) {
                     float cr = s.forma.corR, cg = s.forma.corG, cb = s.forma.corB;
-                    desenharBloco3D(r.posicao.x, BASE_Y, r.posicao.z,
+                    desenharBloco3D(r.posicao.x, py, r.posicao.z,
                                     tam, tam, tam,
                                     cr,        cg,        cb,
                                     cr*0.80f,  cg*0.80f,  cb*0.80f,
@@ -83,7 +95,7 @@ inline void desenharSkill(const SkillData& s, const RuntimeSkill& r) {
                                     cr*0.90f,  cg*0.90f,  cb*0.90f,
                                     cr*0.65f,  cg*0.65f,  cb*0.65f);
                 } else {
-                    desenharBloco3D(r.posicao.x, BASE_Y, r.posicao.z,
+                    desenharBloco3D(r.posicao.x, py, r.posicao.z,
                                     tam, tam, tam,
                                     1.0f, 1.0f, 0.20f,
                                     0.80f, 0.80f, 0.0f,
@@ -98,7 +110,7 @@ inline void desenharSkill(const SkillData& s, const RuntimeSkill& r) {
             // Linha da posição na direção, comprimento da forma.
             float x1 = r.posicao.x + r.direcao.x * s.forma.comprimento;
             float z1 = r.posicao.z + r.direcao.z * s.forma.comprimento;
-            desenharLinha3D(r.posicao.x, BASE_Y, r.posicao.z,
+            desenharLinha3D(r.posicao.x, r.posicao.y, r.posicao.z,
                             x1, z1,
                             s.forma.largura,
                             0.40f, 0.90f, 1.0f);   // ciano para feixe
@@ -132,7 +144,7 @@ inline void desenharSkill(const SkillData& s, const RuntimeSkill& r) {
         case FORMA_CHAIN: {
             // ponto de salto: bloco pequeno azulado
             const float L = 0.18f, ALT = 0.18f;
-            desenharBloco3D(r.posicao.x, BASE_Y, r.posicao.z,
+            desenharBloco3D(r.posicao.x, r.posicao.y, r.posicao.z,
                             L, L, ALT,
                             0.40f, 0.70f, 1.0f,
                             0.20f, 0.45f, 0.80f,

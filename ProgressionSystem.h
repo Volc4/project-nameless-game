@@ -483,14 +483,20 @@ inline void montarBuildCompleta(const InventarioSkills& inv,
         }
 
         // 1. Upgrades clássicos (DANO, CADENCIA, PERFURACAO, QUANTIDADE)
-        build = aplicarUpgradesNaSkill(build, upgrades, d);
+        //    Armas Inteligentes são isentas: têm progressão própria por nível e
+        //    os upgrades de atributo quebrariam a build (ex: QUANTIDADE sobrescreve
+        //    forma.quantidade; PERFURACAO quebraria o limite do Míssil Guiado).
+        if (!ehArmaInt)
+            build = aplicarUpgradesNaSkill(build, upgrades, d);
 
         // 2. Nível de evolução da skill (não aplicado em Armas Inteligentes)
         if (!ehArmaInt)
             build = aplicarNivelSkill(build, inv.nivelSkill[idSkill]);
 
-        // 3. Atributos globais do inventário
-        build = aplicarAtributosGlobaisNaSkill(build, inv.atributosGlobais);
+        // 3. Atributos globais do inventário (isentos para Armas Inteligentes
+        //    pela mesma razão: bonusPerfuracao quebraria o Míssil Guiado)
+        if (!ehArmaInt)
+            build = aplicarAtributosGlobaisNaSkill(build, inv.atributosGlobais);
 
         // 4. Transformação de Arquétipo — ÚLTIMO passo, sobre tudo anterior.
         //    Só afeta o Disparo base (idSkill == idDisparo).
@@ -560,14 +566,12 @@ static bool _tentarNovaSkill(MenuLevelUp& menu, const InventarioSkills& inv) {
 
     int candidatos[MAX_SKILLS_CATALOGO];
     int nCand = 0;
-    int armaIntAtual = armaInteligenteEquipada(inv);   // -1 se nenhuma
     for (int i = 0; i < total && i < MAX_SKILLS_CATALOGO; ++i) {
         if (estaEquipada(inv, i)) continue;
         if (_jaSorteado(menu, ESCOLHA_NOVA_SKILL, i)) continue;
 
-        // Exclusividade: se já há uma arma inteligente equipada, não oferece
-        // outra arma inteligente (apenas uma por partida).
-        if (armaIntAtual >= 0 && ehArmaInteligente(i)) continue;
+        // Apenas Armas Inteligentes aparecem como nova skill no menu.
+        if (!ehArmaInteligente(i)) continue;
 
         candidatos[nCand++] = i;
     }
@@ -595,13 +599,10 @@ static bool _tentarUpgradeSkill(MenuLevelUp& menu, const InventarioSkills& inv) 
         if (id < 0) continue;
         if (_jaSorteado(menu, ESCOLHA_UPGRADE_SKILL, id)) continue;
 
-        // Arma Inteligente: teto de nível 3 (spec). Ao atingi-lo, não aparece
-        // mais como opção de evolução.
-        if (ehArmaInteligente(id)) {
-            if (armaInteligenteNoMaximo(inv, id)) continue;
-        } else {
-            if (!podeEvolir(inv, id)) continue;
-        }
+        // Apenas Armas Inteligentes podem ser evoluídas pelo menu.
+        if (!ehArmaInteligente(id)) continue;
+        if (armaInteligenteNoMaximo(inv, id)) continue;
+
         candidatos[nCand++] = id;
     }
     if (nCand == 0) return false;
@@ -619,7 +620,7 @@ static bool _tentarUpgradeSkill(MenuLevelUp& menu, const InventarioSkills& inv) 
     std::snprintf(c.descricao, ESCOLHA_DESC_MAX,
                   "Evoluir: %s  (Nivel %d -> %d)", nome, nivelAtual, nivelAtual+1);
     std::snprintf(c.subtitulo, ESCOLHA_SUB_MAX,
-                  "+30%% dano, +10%% raio, +1 perfuracao");
+                  "+1 projetil guiado por disparo");
     menu.quantidade++;
     return true;
 }
@@ -660,6 +661,11 @@ inline void sortearRecompensas(MenuLevelUp& menu, const InventarioSkills& inv,
                                const SistemaUpgrades& up) {
     limparMenu(menu);
 
+    // Slot 1: nova skill (inclui Armas Inteligentes se nenhuma equipada ainda)
+    _tentarNovaSkill(menu, inv);
+    // Slot 2: upgrade de skill existente (inclui evolução de Arma Inteligente)
+    _tentarUpgradeSkill(menu, inv);
+    // Slots restantes: atributos globais
     while (menu.quantidade < MAX_ESCOLHAS_MENU)
         if (!_tentarAtributoGlobal(menu, arq, up)) break;
 }
@@ -689,11 +695,6 @@ inline void aplicarEscolhaLevelUp(const LevelUpChoice& escolha,
     switch (escolha.tipo) {
         case ESCOLHA_NOVA_SKILL: {
             int id = escolha.referencia;
-            // Exclusividade de Arma Inteligente: se o jogador tenta equipar uma
-            // arma inteligente e já há outra equipada, recusa (defesa extra
-            // além do filtro do menu).
-            if (ehArmaInteligente(id) && !podeEquiparArmaInteligente(inv, id))
-                break;
             desbloquearSkill(inv, id);
             equiparSkill(inv, id);
             break;

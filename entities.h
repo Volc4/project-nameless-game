@@ -313,6 +313,11 @@ struct EstadoDoJogo {
 
     // Sistema de Arquétipos — especialização irreversível da arma base.
     EstadoArquetipo arquetipoArma;
+
+    // Posição da pistola no espaço do mundo (calculada a cada frame em Main.cpp
+    // a partir da transform da Sofia + bone socket). Usada como origem dos
+    // projéteis manuais do Disparo.
+    Vetor3D posicaoPistola;
 };
 
 // ---------------------------------------------------------------------------

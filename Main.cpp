@@ -125,8 +125,23 @@ static int  g_kills         = 0;
 static ModeloAnimado g_sofia;
 static bool          g_sofiaCarregada = false;
 
+// --- Pistola (prop estático, bone socket na mão da Sofia) -------------------
+static ModeloAnimado g_pistola;
+static bool          g_pistolaCarregada = false;
+
+// Offset de encaixe — calibre com as teclas DEBUG_PISTOLA e fixe os valores finais.
+// Para desabilitar as teclas de debug, comente o #define abaixo.
+//#define DEBUG_PISTOLA
+static float g_pistolaOffX = -32.00f;
+static float g_pistolaOffY =  27.00f;
+static float g_pistolaOffZ =  10.00f;
+static float g_pistolaRotX = -60.0f;
+static float g_pistolaRotY = -20.0f;
+static float g_pistolaRotZ = -100.0f;
+static float g_pistolaEsc  =  21.2095f;
+
 // Diminuímos a escala em 20% (de 0.01f para 0.008f)
-static const float   SOFIA_ESCALA     = 0.008f; 
+static const float   SOFIA_ESCALA     = 0.008f;
 
 // Mantém a correção de rotação
 static const float   SOFIA_ROT_OFFSET = 90.0f;
@@ -167,24 +182,16 @@ void processarMorteZumbi(EstadoDoJogo& jogo, Zumbi& z) {
     z.vivo = false;
     g_kills++;
 
-    // --- Sorteia e toca um dos TRÊS áudios de morte ---
-    int sorteioMorte = rand() % 3;
-    if (sorteioMorte == 0) {
-        tocarEfeito("Sons/morte1.mp3");
-    } else if (sorteioMorte == 1) {
-        tocarEfeito("Sons/morte2.mp3");
-    } else {
-        tocarEfeito("Sons/morte3.mp3");
-    }
+    tocarMorteZumbi();
 
     // XP por tipo (×10 temporário para teste de arquétipos)
     int xp = 1;
     switch (z.tipo) {
-        case RAPIDO:    xp = 2; break;
-        case TANK:      xp = 5; break;
-        case ATIRADOR:  xp = 3; break;
-        case EXPLOSIVO: xp = 3; break;
-        default:        xp = 1; break;
+        case RAPIDO:    xp = 20; break;
+        case TANK:      xp = 50; break;
+        case ATIRADOR:  xp = 30; break;
+        case EXPLOSIVO: xp = 30; break;
+        default:        xp = 10; break;
     }
     jogo.protagonista.xpAtual += xp;
 
@@ -213,7 +220,7 @@ void processarMorteZumbi(EstadoDoJogo& jogo, Zumbi& z) {
                     ep.vivo = false;
                     g_jogoTerminado = true;
                     pausarMusicaFundo();
-                    tocarEfeito("Sons/gameover.mp3");
+                    tocarGameOver();
                 }
             }
         }
@@ -399,6 +406,55 @@ void desenharArco3D(float cx, float y, float cz,
     glEnd();
 }
 
+// ---------------------------------------------------------------------------
+// desenharMissilOrientado3D — paralelepípedo colorido orientado pela direção.
+//   cx, cz   : centro do míssil no plano XZ
+//   yaw      : atan2(direcao.z, direcao.x) — ângulo do eixo longo no plano XZ
+//   cr,cg,cb : cor base do míssil
+// ---------------------------------------------------------------------------
+void desenharMissilOrientado3D(float cx, float cy, float cz, float yaw,
+                                float cr, float cg, float cb)
+{
+    const float COMP = 0.55f;   // comprimento (eixo longo, orientado)
+    const float LARG = 0.15f;   // seção transversal (largura e altura)
+
+    glPushMatrix();
+    glTranslatef(cx, cy, cz);
+    // Rotação em Y: -yaw converte o ângulo do plano XZ para glRotatef (dir +X = yaw 0).
+    glRotatef(-(yaw * (180.0f / 3.14159265f)), 0.0f, 1.0f, 0.0f);
+    glScalef(COMP, LARG, LARG);
+
+    // Cubo unitário centrado (−0.5 a +0.5 em cada eixo).
+    // O eixo X local corresponde ao eixo longo do míssil após glScalef.
+    float x0 = -0.5f, x1 = 0.5f;
+    float y0 = -0.5f, y1 = 0.5f;
+    float z0 = -0.5f, z1 = 0.5f;
+
+    glBegin(GL_QUADS);
+        glColor3f(cr,          cg,          cb);
+        glVertex3f(x0, y1, z0); glVertex3f(x1, y1, z0);
+        glVertex3f(x1, y1, z1); glVertex3f(x0, y1, z1);
+
+        glColor3f(cr * 0.80f,  cg * 0.80f,  cb * 0.80f);
+        glVertex3f(x0, y0, z1); glVertex3f(x1, y0, z1);
+        glVertex3f(x1, y1, z1); glVertex3f(x0, y1, z1);
+
+        glColor3f(cr * 0.55f,  cg * 0.55f,  cb * 0.55f);
+        glVertex3f(x1, y0, z0); glVertex3f(x0, y0, z0);
+        glVertex3f(x0, y1, z0); glVertex3f(x1, y1, z0);
+
+        glColor3f(cr * 0.90f,  cg * 0.90f,  cb * 0.90f);
+        glVertex3f(x1, y0, z1); glVertex3f(x1, y0, z0);
+        glVertex3f(x1, y1, z0); glVertex3f(x1, y1, z1);
+
+        glColor3f(cr * 0.65f,  cg * 0.65f,  cb * 0.65f);
+        glVertex3f(x0, y0, z0); glVertex3f(x0, y0, z1);
+        glVertex3f(x0, y1, z1); glVertex3f(x0, y1, z0);
+    glEnd();
+
+    glPopMatrix();
+}
+
 // =============================================================================
 //  INICIALIZAÇÃO DO ESTADO DO JOGO
 // =============================================================================
@@ -415,7 +471,7 @@ static void inicializarEstadoJogo() {
     g_jogo.protagonista.hp            = 5;
     g_jogo.protagonista.hpMaximo      = 5;
     g_jogo.protagonista.temporizadorIframe = 0.0f;
-    g_jogo.protagonista.duracaoIframe      = 1.0f;
+    g_jogo.protagonista.duracaoIframe      = 0.35f;
     g_jogo.protagonista.xpAtual            = 0;
     g_jogo.protagonista.xpParaProximoNivel = 20;
     g_jogo.protagonista.nivel              = 1;
@@ -565,6 +621,29 @@ static void atualizarJogador(float dt) {
     g_jogo.stand.posicao.x = p.posicao.x - dirMira.x * distanciaStand;
     g_jogo.stand.posicao.z = p.posicao.z - dirMira.z * distanciaStand;
     g_jogo.stand.anguloMira = std::atan2(dirMira.z, dirMira.x);
+
+    // Mantém o Y do stand na mesma altura do fantasma (bob incluso)
+    g_jogo.stand.posicao.y = 3.5f + std::sin(g_jogo.tempoSobrevivido * 2.0f) * 0.12f;
+
+    // Posição da pistola no mundo — replica a cadeia de transforms de desenharJogador()
+    // mais o bone socket, para que projéteis manuais saiam do cano da pistola.
+    if (g_sofiaCarregada && g_sofia.temMao()) {
+        float angRad = -g_jogo.stand.anguloMira + glm::radians(SOFIA_ROT_OFFSET);
+        glm::mat4 m = glm::translate(glm::mat4(1.0f),
+                                     glm::vec3(p.posicao.x, SOFIA_Y_OFFSET, p.posicao.z));
+        m = glm::rotate(m, angRad, glm::vec3(0.0f, 1.0f, 0.0f));
+        m = glm::rotate(m, glm::radians(90.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+        m = glm::scale(m, glm::vec3(SOFIA_ESCALA, SOFIA_ESCALA, SOFIA_ESCALA));
+        m = m * g_sofia.obterMatrizSocketMao();
+        m = glm::translate(m, glm::vec3(g_pistolaOffX, g_pistolaOffY, g_pistolaOffZ));
+        g_jogo.posicaoPistola.x = m[3].x;
+        g_jogo.posicaoPistola.y = m[3].y;
+        g_jogo.posicaoPistola.z = m[3].z;
+    } else {
+        g_jogo.posicaoPistola.x = p.posicao.x;
+        g_jogo.posicaoPistola.y = 1.5f;
+        g_jogo.posicaoPistola.z = p.posicao.z;
+    }
 
 // --- Controle de Sobrecarga e Resfriamento de Tensão ---
     float maxTensao      = maxTensaoDoNivel(g_jogo.protagonista.upgrades.niveis[TENSAO_UP]);
@@ -800,13 +879,13 @@ static void atualizarProjeteisZumbi(float dt) {
                     p.vivo = false;
                     g_jogoTerminado = true;
                     pausarMusicaFundo();
-                    tocarEfeito("Sons/gameover.mp3");
+                    tocarGameOver();
                 }
                 }
             }
         }
     }
-}
+
 
 // =============================================================================
 //  SPAWN PERIÓDICO DE ZUMBIS
@@ -842,6 +921,13 @@ static void atualizarSpawn(float dt) {
     if (g_jogo.tempoUltimoSpawn < SPAWN_INTERVALO) return;
     g_jogo.tempoUltimoSpawn = 0.0f;
 
+    // Conta apenas zumbis VIVOS — mortos ficam no vetor como slots reaproveitáveis.
+    // horda.size() cresce sem parar se usarmos push_back sempre; por isso contamos
+    // vivos para o cap e reaproveitamos slots mortos antes de alocar novos.
+    int ativosNaHorda = 0;
+    for (size_t s = 0; s < g_jogo.horda.size(); ++s)
+        if (g_jogo.horda[s].vivo) ativosNaHorda++;
+
     const TipoZumbi tipos[5] = { NORMAL, RAPIDO, TANK, ATIRADOR, EXPLOSIVO };
     float t = g_jogo.tempoSobrevivido;
 
@@ -850,10 +936,23 @@ static void atualizarSpawn(float dt) {
         if (mult == 0) continue;
         int n = SPAWN_BASE * mult;
         for (int i = 0; i < n; ++i) {
-            if ((int)g_jogo.horda.size() >= HORDA_MAX) break;
-            g_jogo.horda.push_back(criarZumbi(tipos[ti]));
+            if (ativosNaHorda >= HORDA_MAX) break;
+
+            // Tenta reaproveitar um slot morto para não crescer o vetor ao infinito.
+            bool reutilizou = false;
+            for (size_t s = 0; s < g_jogo.horda.size(); ++s) {
+                if (!g_jogo.horda[s].vivo) {
+                    g_jogo.horda[s] = criarZumbi(tipos[ti]);
+                    reutilizou = true;
+                    break;
+                }
+            }
+            if (!reutilizou)
+                g_jogo.horda.push_back(criarZumbi(tipos[ti]));
+
+            ativosNaHorda++;
         }
-        if ((int)g_jogo.horda.size() >= HORDA_MAX) break;
+        if (ativosNaHorda >= HORDA_MAX) break;
     }
 }
 
@@ -1063,21 +1162,91 @@ static void desenharJogador() {
 
     g_sofia.renderizar();
 
+    // Pistola — bone socket: herda a matriz global do osso da mão da Sofia.
+    // Ainda dentro do glPushMatrix da Sofia, então as transforms dela já estão na pilha.
+    if (g_pistolaCarregada && g_sofia.temMao()) {
+        glPushMatrix();
+        glm::mat4 socket = g_sofia.obterMatrizSocketMao();
+        glMultMatrixf(glm::value_ptr(socket));
+        glTranslatef(g_pistolaOffX, g_pistolaOffY, g_pistolaOffZ);
+        glRotatef(g_pistolaRotX, 1.0f, 0.0f, 0.0f);
+        glRotatef(g_pistolaRotY, 0.0f, 1.0f, 0.0f);
+        glRotatef(g_pistolaRotZ, 0.0f, 0.0f, 1.0f);
+        glScalef(g_pistolaEsc, g_pistolaEsc, g_pistolaEsc);
+        g_pistola.renderizar();
+        glPopMatrix();
+    }
+
     glDisable(GL_LIGHTING);
     glPopMatrix();
 }
 
-// Stand (cubo dourado menor)
+// Stand — fantasma translúcido: teapot verde (tensão baixa) → vermelho (tensão alta).
+// Bico segue o cursor. Ao Devorar, avança na direção do cursor e cresce.
 static void desenharStand() {
     Entidade& s = g_jogo.stand;
-    bool sob = s.emSobrecarga;
-    float r = sob ? 1.0f : 0.9f;
-    float g = sob ? 0.3f : 0.7f;
-    float b = sob ? 0.0f : 0.0f;
-    desenharBloco3D(s.posicao.x, 0.0f, s.posicao.z,
-                    0.6f, 0.6f, 0.9f,
-                    r, g, b,  r*0.8f, g*0.8f, b,
-                    r*0.6f, g*0.6f, b,  r*0.9f, g*0.9f, b,  r*0.7f, g*0.7f, b);
+
+    // Cor: verde → vermelho conforme tensão
+    float maxT  = maxTensaoDoNivel(g_jogo.protagonista.upgrades.niveis[TENSAO_UP]);
+    float ratio = (maxT > 0.0f) ? (s.tensaoAtual / maxT) : 0.0f;
+    if (ratio < 0.0f) ratio = 0.0f;
+    if (ratio > 1.0f) ratio = 1.0f;
+    float cr = ratio;
+    float cg = 1.0f - ratio;
+
+    // ---- Animação de Devorar ------------------------------------------------
+    // progresso: 1.0 no início da janela → 0.0 no fim
+    bool  devorarAtivo = (s.temporizadorDevorar > 0.0f);
+    float progresso    = devorarAtivo
+                         ? (s.temporizadorDevorar / DEVORAR_DURACAO_JANELA) : 0.0f;
+    // Curva suave: 0 → 1 → 0 ao longo da janela (pico no meio)
+    float arco = std::sin(progresso * 3.14159265f);
+
+    // Lunge na direção da mira (bico vai "morder" o alvo)
+    float lungeX = std::cos(s.anguloMira) * arco * 2.5f;
+    float lungeZ = std::sin(s.anguloMira) * arco * 2.5f;
+
+    // Escala e opacidade aumentam durante o Devorar
+    float escala = 0.5f  + arco * 0.35f;
+    float alpha  = 0.45f + arco * 0.40f;
+
+    // Bob de levitação
+    float floatY = 3.5f + std::sin(g_jogo.tempoSobrevivido * 2.0f) * 0.12f;
+
+    // Bico segue o mouse: -angGraus aponta o spout (+X no teapot do GLUT) para
+    // a direção do cursor. Se aparecer invertido, ajuste adicionando ±90° ou ±180°.
+    float angGraus = s.anguloMira * (180.0f / 3.14159265f);
+
+    // --- Estado GL translúcido -----------------------------------------------
+    glDepthMask(GL_FALSE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDisable(GL_TEXTURE_2D);
+
+    glEnable(GL_LIGHTING);
+    glEnable(GL_LIGHT0);
+    glEnable(GL_COLOR_MATERIAL);
+    glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
+    GLfloat lpos[4] = { 0.0f, 20.0f,  5.0f, 1.0f };
+    GLfloat lamb[4] = { 0.35f, 0.35f, 0.35f, 1.0f };
+    GLfloat ldif[4] = { 1.0f,  1.0f,  1.0f, 1.0f };
+    glLightfv(GL_LIGHT0, GL_POSITION, lpos);
+    glLightfv(GL_LIGHT0, GL_AMBIENT,  lamb);
+    glLightfv(GL_LIGHT0, GL_DIFFUSE,  ldif);
+
+    glPushMatrix();
+    glTranslatef(s.posicao.x + lungeX, floatY, s.posicao.z + lungeZ);
+    glRotatef(-angGraus, 0.0f, 1.0f, 0.0f);
+    glColor4f(cr, cg, 0.0f, alpha);
+    glutSolidTeapot(escala);
+    glPopMatrix();
+
+    // --- Restaura estado GL --------------------------------------------------
+    glDisable(GL_COLOR_MATERIAL);
+    glDisable(GL_LIGHTING);
+    glDisable(GL_BLEND);
+    glDepthMask(GL_TRUE);
+    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
 }
 
 // Zumbis
@@ -1466,6 +1635,14 @@ static void cbPassiveMotion(int x, int y) {
     g_posicaoCursor = projetarMouseNoMundo(x, y);
 }
 
+#ifdef DEBUG_PISTOLA
+static void _imprimirOffsetPistola() {
+    printf("[PISTOLA] Off=(%.2f,%.2f,%.2f) Rot=(%.1f,%.1f,%.1f) Esc=%.4f\n",
+           g_pistolaOffX, g_pistolaOffY, g_pistolaOffZ,
+           g_pistolaRotX, g_pistolaRotY, g_pistolaRotZ, g_pistolaEsc);
+}
+#endif
+
 static void cbKeyboard(unsigned char key, int /*x*/, int /*y*/) {
     switch (key) {
         // Movimento
@@ -1480,8 +1657,9 @@ static void cbKeyboard(unsigned char key, int /*x*/, int /*y*/) {
                 g_jogoTerminado = false;
                 g_kills = 0;
                 g_skills.limparTodos();
+                pararGameOver();
                 inicializarEstadoJogo();
-                
+
                 // Reinicia a música de fundo correta de acordo com a flag do modo secreto
                 if (g_musicaSecreta) {
                     tocarMusicaFundo("Sons/festa_zumbi.mp3");
@@ -1538,6 +1716,28 @@ static void cbKeyboard(unsigned char key, int /*x*/, int /*y*/) {
         case 27:   // ESC
             std::exit(0);
             break;
+
+#ifdef DEBUG_PISTOLA
+        // --- Calibração ao vivo do bone socket da pistola ---
+        //   Posição  : U/I = X-/X+  |  O/P = Y-/Y+  |  K/L = Z-/Z+  (passo 1 unit)
+        //   Rotação  : 7/8 = RotX   |  9/- = RotY   |  =/\ = RotZ   (passo 5°)
+        //   Escala   : , = -10%     |  . = +10%
+        //   Resultado impresso no console a cada tecla; copie os valores finais.
+        case 'u': g_pistolaOffX -= 1.0f; _imprimirOffsetPistola(); break;
+        case 'i': g_pistolaOffX += 1.0f; _imprimirOffsetPistola(); break;
+        case 'o': g_pistolaOffY -= 1.0f; _imprimirOffsetPistola(); break;
+        case 'p': g_pistolaOffY += 1.0f; _imprimirOffsetPistola(); break;
+        case 'k': g_pistolaOffZ -= 1.0f; _imprimirOffsetPistola(); break;
+        case 'l': g_pistolaOffZ += 1.0f; _imprimirOffsetPistola(); break;
+        case '7': g_pistolaRotX -= 5.0f; _imprimirOffsetPistola(); break;
+        case '8': g_pistolaRotX += 5.0f; _imprimirOffsetPistola(); break;
+        case '9': g_pistolaRotY -= 5.0f; _imprimirOffsetPistola(); break;
+        case '-': g_pistolaRotY += 5.0f; _imprimirOffsetPistola(); break;
+        case '=': g_pistolaRotZ -= 5.0f; _imprimirOffsetPistola(); break;
+        case '\\': g_pistolaRotZ += 5.0f; _imprimirOffsetPistola(); break;
+        case ',': g_pistolaEsc *= 0.9f;  _imprimirOffsetPistola(); break;
+        case '.': g_pistolaEsc *= 1.1f;  _imprimirOffsetPistola(); break;
+#endif
     }
 }
 
@@ -1590,6 +1790,8 @@ int main(int argc, char** argv) {
     if (g_sofiaCarregada) {
         g_sofia.definirTexturaManual("Sofia.png");
         g_sofia.configurarRootMotion(true, "mixamorig:Hips");
+        g_sofia.definirOssoMao("mixamorig:RightHand"); // bone socket da pistola
+        g_sofia.listarOssos(); // lista ossos no console — confirme o nome; ajuste definirOssoMao se preciso
         // Toca a primeira animação encontrada no modelo
         const std::map<std::string,int>& anims = g_sofia.animacoesDisponiveis();
         if (!anims.empty()) {
@@ -1597,6 +1799,7 @@ int main(int argc, char** argv) {
             g_sofia.congelarNoFrame(14); // Começa parada no frame 1
         }
     }
+    g_pistolaCarregada = g_pistola.carregar("pistola.glb");
 
     // 2. Catálogo de skills
     registrarSkillsPadrao();

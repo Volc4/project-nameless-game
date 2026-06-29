@@ -363,12 +363,13 @@ inline void resolverEfeitos(const SkillData& s, const RuntimeSkill& r,
                     if (jogo.stand.tensaoAtual < 0.0f) jogo.stand.tensaoAtual = 0.0f;
                 }
                 break;
-            case EFE_HEAL:                        // antigo efeitoCuraVida
-                if ((rand() % 100) < 30) {
-                    if (jogo.protagonista.hp < jogo.protagonista.hpMaximo)
-                        jogo.protagonista.hp++;
-                }
+            case EFE_HEAL: {                      // cura garantida de e.valor HP
+                int cura = (e.valor > 0) ? e.valor : 1;
+                jogo.protagonista.hp += cura;
+                if (jogo.protagonista.hp > jogo.protagonista.hpMaximo)
+                    jogo.protagonista.hp = jogo.protagonista.hpMaximo;
                 break;
+            }
             case EFE_SHOCK:
                 aplicarDanoZumbi(jogo, z, e.valor);  // dano; stun real na Camada 3
                 break;
@@ -378,13 +379,26 @@ inline void resolverEfeitos(const SkillData& s, const RuntimeSkill& r,
                 z.posicao.z += dir.z * e.magnitude;
                 break;
             }
+            case EFE_EXPLOSION: {
+                // AoE centrado no zumbi atingido: dano a todos no raio magnitude.
+                float raio = (e.magnitude > 0.0f) ? e.magnitude : 1.5f;
+                float raio2 = raio * raio;
+                int danoExp = (e.valor > 0) ? e.valor : 1;
+                for (int k = 0; k < (int)jogo.horda.size(); ++k) {
+                    Zumbi& alvo = jogo.horda[k];
+                    if (!alvo.vivo) continue;
+                    float dx = alvo.posicao.x - z.posicao.x;
+                    float dz = alvo.posicao.z - z.posicao.z;
+                    if (dx*dx + dz*dz <= raio2)
+                        aplicarDanoZumbi(jogo, alvo, danoExp);
+                }
+                break;
+            }
             case EFE_BURN:
             case EFE_FREEZE:
-            case EFE_EXPLOSION:
             case EFE_CHAINEXPLOSION:
             case EFE_SPAWNSKILL:
-                // Camada 3: status DoT/slow e spawn recursivo.
-                // Placeholder seguro: aplica dano-base se houver valor.
+                // Camada 3: placeholder seguro.
                 if (e.valor > 0) aplicarDanoZumbi(jogo, z, e.valor);
                 break;
             default:
