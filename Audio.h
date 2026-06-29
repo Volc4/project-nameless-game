@@ -37,13 +37,18 @@ inline void retomarMusicaFundo() {
 // =======================================================
 inline void tocarEfeito(const char* caminhoSom) {
     static int contadorCanal = 0;
-    contadorCanal++;
+    // Sistema de pool circular: recicla 10 canais (0 a 9) para evitar vazamento de memória/MCI
+    contadorCanal = (contadorCanal + 1) % 10;
 
     std::stringstream ss;
     ss << "sfx_" << contadorCanal;
     std::string alias = ss.str();
 
-    std::string comandoOpen = std::string("open \"") + caminhoSom + "\" type mpegvideo alias " + alias;
+    // Fecha o canal correspondente antes de sobrescrevê-lo
+    std::string comandoClose = std::string("close ") + alias;
+    mciSendString(comandoClose.c_str(), NULL, 0, NULL);
+
+    std::string comandoOpen = std::string("open \"") + std::string(caminhoSom) + "\" type mpegvideo alias " + alias;
     mciSendString(comandoOpen.c_str(), NULL, 0, NULL);
 
     std::string comandoPlay = std::string("play ") + alias;

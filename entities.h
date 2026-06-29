@@ -298,13 +298,8 @@ struct EstadoDoJogo {
 
     bool atirandoAgora;
 
-    // FASE 6 — Menu de progressão (substitui opcoesUpgrade[]+quantidadeOpcoes)
+    // FASE 6 — Menu de progressão
     MenuLevelUp menuAtual;
-
-    // RETROCOMPATIBILIDADE — mantidos para compilação de código legado que
-    // ainda referencia esses campos. Deprecated: usar menuAtual.
-    TipoUpgrade opcoesUpgrade[3];
-    int quantidadeOpcoes;
 
     // FASE 6 — Inventário de skills do jogador
     InventarioSkills inventario;

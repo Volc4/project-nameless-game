@@ -167,6 +167,16 @@ void processarMorteZumbi(EstadoDoJogo& jogo, Zumbi& z) {
     z.vivo = false;
     g_kills++;
 
+    // --- Sorteia e toca um dos TRÊS áudios de morte ---
+    int sorteioMorte = rand() % 3;
+    if (sorteioMorte == 0) {
+        tocarEfeito("Sons/morte1.mp3");
+    } else if (sorteioMorte == 1) {
+        tocarEfeito("Sons/morte2.mp3");
+    } else {
+        tocarEfeito("Sons/morte3.mp3");
+    }
+
     // XP por tipo (×10 temporário para teste de arquétipos)
     int xp = 1;
     switch (z.tipo) {
@@ -202,6 +212,8 @@ void processarMorteZumbi(EstadoDoJogo& jogo, Zumbi& z) {
                     ep.hp   = 0;
                     ep.vivo = false;
                     g_jogoTerminado = true;
+                    pausarMusicaFundo();
+                    tocarEfeito("Sons/gameover.mp3");
                 }
             }
         }
@@ -589,6 +601,9 @@ static void atualizarJogador(float dt) {
         if (s_cooldownDisparo <= 0.0f) {
             g_skills.executar(g_jogo, g_posicaoCursor);
             
+            // Reproduz o efeito sonoro de disparo usando o arquivo renomeado
+            tocarEfeito("Sons/disparo.mp3");
+
             // Cooldown do clique manual afetado pela velocidade da cadência.
             // ARQ_ESPINGARDA_TATICA seta cooldownManual > 0 para impor base ×4 mais lento.
             float baseCooldown = 0.50f;
@@ -636,10 +651,13 @@ static void atualizarJogador(float dt) {
 
 static void atualizarZumbis(float dt) {
     Jogador& p = g_jogo.protagonista;
+    int zumbisAtivos = 0; // Contador para o gerenciador de áudio
 
     for (size_t i = 0; i < g_jogo.horda.size(); ++i) {
         Zumbi& z = g_jogo.horda[i];
         if (!z.vivo) continue;
+
+        zumbisAtivos++; // Registra que há zumbis vivos na tela
 
         float dx   = p.posicao.x - z.posicao.x;
         float dz   = p.posicao.z - z.posicao.z;
@@ -648,7 +666,7 @@ static void atualizarZumbis(float dt) {
         float nz   = (dist > 0.001f) ? dz / dist : 0.0f;
 
         if (z.tipo == ATIRADOR) {
-            // Mantém distância preferida: aproxima se longe, recua se perto
+            // IA do Atirador
             if (dist > ATIRADOR_DIST * 1.3f) {
                 z.posicao.x += nx * z.velocidade * dt;
                 z.posicao.z += nz * z.velocidade * dt;
@@ -656,7 +674,7 @@ static void atualizarZumbis(float dt) {
                 z.posicao.x -= nx * z.velocidade * dt;
                 z.posicao.z -= nz * z.velocidade * dt;
             }
-            // Dispara periodicamente
+            
             z.tiroTimer -= dt;
             if (z.tiroTimer <= 0.0f) {
                 z.tiroTimer = ATIRADOR_COOLDOWN;
@@ -671,7 +689,7 @@ static void atualizarZumbis(float dt) {
                 g_jogo.projeteisZumbi.push_back(pz);
             }
         } else {
-            // NORMAL, RAPIDO, TANK, EXPLOSIVO: perseguição direta
+            // IA de Perseguição Direta
             z.posicao.x += nx * z.velocidade * dt;
             z.posicao.z += nz * z.velocidade * dt;
         }
@@ -681,6 +699,24 @@ static void atualizarZumbis(float dt) {
         if (z.posicao.x < -ARENA_HALF) z.posicao.x = -ARENA_HALF;
         if (z.posicao.z >  ARENA_HALF) z.posicao.z =  ARENA_HALF;
         if (z.posicao.z < -ARENA_HALF) z.posicao.z = -ARENA_HALF;
+    }
+
+    // --- Gerenciador de Áudio Ambiente dos Zumbis ---
+    static float timerSomZumbi = 2.0f; 
+    
+    // Só consome canal de áudio se a horda estiver ativa no mapa
+    if (zumbisAtivos > 0) {
+        timerSomZumbi -= dt;
+        if (timerSomZumbi <= 0.0f) {
+            // Sorteia um dos três sons
+            int sorteio = rand() % 3;
+            if (sorteio == 0)      tocarEfeito("Sons/brains1.mp3");
+            else if (sorteio == 1) tocarEfeito("Sons/brains2.mp3");
+            else                   tocarEfeito("Sons/passos_zumbi.mp3");
+            
+            // Define o tempo para o próximo som aleatoriamente entre 1.5s e 3.5s
+            timerSomZumbi = 1.5f + ((rand() % 200) / 100.0f);
+        }
     }
 }
 
@@ -701,6 +737,8 @@ void processarColisaoZumbiJogador_Grade(EstadoDoJogo& jogo,
                 p.hp   = 0;
                 p.vivo = false;
                 g_jogoTerminado = true;
+                pausarMusicaFundo();
+                tocarEfeito("Sons/gameover.mp3");
             }
             break;
         }
@@ -761,6 +799,9 @@ static void atualizarProjeteisZumbi(float dt) {
                     p.hp   = 0;
                     p.vivo = false;
                     g_jogoTerminado = true;
+                    pausarMusicaFundo();
+                    tocarEfeito("Sons/gameover.mp3");
+                }
                 }
             }
         }
@@ -1440,6 +1481,13 @@ static void cbKeyboard(unsigned char key, int /*x*/, int /*y*/) {
                 g_kills = 0;
                 g_skills.limparTodos();
                 inicializarEstadoJogo();
+                
+                // Reinicia a música de fundo correta de acordo com a flag do modo secreto
+                if (g_musicaSecreta) {
+                    tocarMusicaFundo("Sons/festa_zumbi.mp3");
+                } else {
+                    tocarMusicaFundo("Sons/musica_balada.mp3");
+                }
             }
             break;
 
