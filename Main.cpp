@@ -93,7 +93,7 @@ static const int   BOSS_DANO           = 5;      // dano por toque no jogador
 static const float BOSS_VELOCIDADE     = 8.0f;   // 80 % da velocidade do RAPIDO (10.0f)
 static const float BOSS_RAIO_COLISAO   = 2.5f;   // aprox. 5x maior que um zumbi NORMAL
 static const float BOSS_DIST_SPAWN     = 40.0f;  // distância mínima do jogador no spawn
-static const float BOSS_TEMPO_TRIGGER  = 600.0f; // 10 min: momento em que o spawn é bloqueado
+static const float BOSS_TEMPO_TRIGGER  = 240.0f; // 4 min: momento em que o spawn é bloqueado
 static const int   BOSS_XP_RECOMPENSA  = 2000;   // XP concedido ao derrotar o Boss
 static const float BOSS_MSG_DURACAO    = 5.0f;   // duração das mensagens na tela (segundos)
 static const float BOSS_ENTRADA_DURACAO = 2.5f;  // duração do efeito visual de entrada
@@ -1078,18 +1078,16 @@ static void atualizarSpawn(float dt) {
     //   Transições avaliadas a cada frame, independente do tick de spawn.
     // =========================================================================
 
-    // Transição FASE_NORMAL → FASE_AGUARDANDO_BOSS ao atingir 10 minutos
+    // Transição FASE_NORMAL → FASE_AGUARDANDO_BOSS ao atingir 4 minutos
     if (g_jogo.fasePartida == FASE_NORMAL &&
         g_jogo.tempoSobrevivido >= BOSS_TEMPO_TRIGGER) {
         g_jogo.fasePartida = FASE_AGUARDANDO_BOSS;
     }
 
-    // FASE_AGUARDANDO_BOSS: quando a arena estiver limpa (sem zumbis vivos),
-    // invoca o Boss. A condição tempoSobrevivido >= 240s é exigida pelo
-    // design para garantir mínimo de progressão antes da batalha.
+    // FASE_AGUARDANDO_BOSS: assim que a arena estiver limpa, invoca o Boss.
+    // Spawn já está bloqueado, então "vivos == 0" significa arena realmente vazia.
     if (g_jogo.fasePartida == FASE_AGUARDANDO_BOSS &&
-        !g_jogo.bossJaFoiInvocado &&
-        g_jogo.tempoSobrevivido >= 240.0f) {
+        !g_jogo.bossJaFoiInvocado) {
         int vivos = 0;
         for (size_t s = 0; s < g_jogo.horda.size(); ++s)
             if (g_jogo.horda[s].vivo) vivos++;
