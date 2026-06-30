@@ -45,6 +45,7 @@
 #include "SkillRender.h"       // desenharSkill, desenharTodasSkills
 #include "Map.h"               // mapa balada: desenharMapaBalada, processarColisoesCenario
 #include "Audio.h"
+//#include "GameLogic.h"
 
 // --- Modelo animado da protagonista (Assimp + GLM + stb_image) ---------------
 #define STB_IMAGE_IMPLEMENTATION
@@ -74,7 +75,7 @@ static const bool  DEVORAR_SUCESSO_LIMPA_SOBRECARGA = true;   // sucesso sai do 
 static const float SPAWN_INTERVALO    = 3.0f;  // segundos entre ticks de spawn
 static const int   SPAWN_BASE         = 3;     // zumbis base por tipo por tick (multiplicado pelo mult exponencial)
 static const int   SPAWN_MULT_MAX     = 64;    // multiplicador máximo (6 dobramentos)
-static const int   HORDA_MAX          = 1500;   // cap total de zumbis ativos
+static const int   HORDA_MAX          = 40;     // cap total de zumbis ativos
 static const float SPAWN_RAIO_MIN     = 32.0f; // distância mínima do jogador no spawn
 static const float SPAWN_RAIO_MAX     = 45.0f; // distância máxima do jogador no spawn (fora da tela)
 static const float ATIRADOR_DIST      = 15.0f; // distância preferida do Atirador
@@ -96,7 +97,11 @@ static const float BOSS_DIST_SPAWN     = 40.0f;  // distância mínima do jogado
 static const float BOSS_TEMPO_TRIGGER  = 240.0f; // 4 min: momento em que o spawn é bloqueado
 static const int   BOSS_XP_RECOMPENSA  = 2000;   // XP concedido ao derrotar o Boss
 static const float BOSS_MSG_DURACAO    = 5.0f;   // duração das mensagens na tela (segundos)
-static const float BOSS_ENTRADA_DURACAO = 2.5f;  // duração do efeito visual de entrada
+static const float BOSS_ENTRADA_DURACAO  = 2.5f;  // duração do efeito visual de entrada
+static const float BOSS_TIRO_COOLDOWN   = 1.2f;  // s entre rajadas do Boss
+static const int   BOSS_TIRO_COUNT      = 12;    // projéteis por rajada (círculo completo)
+static const float BOSS_PROJETIL_VEL    = 18.0f; // velocidade dos projéteis do Boss
+static const int   BOSS_PROJETIL_DANO   = 2;     // dano por projétil do Boss
 
 static const float ARENA_HALF   = 150.0f;   // metade do lado da arena quadrada
 static const float CAM_DIST     = 30.0f;    // distância da câmera ao ponto focal
@@ -134,6 +139,8 @@ static bool g_cliqueMouse = false;
 
 // Flag de estado
 static bool g_jogoTerminado = false;
+static bool g_emMenuInicial = true;   // true enquanto o menu principal estiver ativo
+static int  g_menuOpcao     = 0;      // 0 = Iniciar Jogo, 1 = Sair
 static int  g_kills         = 0;
 
 // Falas da protagonista — volume e flags de disparo único (reset em inicializarEstadoJogo)
@@ -149,6 +156,30 @@ static bool          g_sofiaCarregada = false;
 // --- Pistola (prop estático, bone socket na mão da Sofia) -------------------
 static ModeloAnimado g_pistola;
 static bool          g_pistolaCarregada = false;
+
+// --- Modelo do Boss (Cabeça.glb) -------------------------------------------
+static ModeloAnimado g_cabeca;
+static bool          g_cabecaCarregada = false;
+
+// --- Modelo dos Zumbis (Zumbi.glb) -----------------------------------------
+static ModeloAnimado g_zumbi;
+static bool          g_zumbiCarregado  = false;
+static std::string   g_zumbiNomeAnim;
+// Calibrado para casar altura aparente com a Sofia (malha do Zumbi ~4.43x menor).
+// Derivado de SOFIA_ESCALA * (alturaSofia/alturaZumbi) medidos via debugImprimirExtensao:
+//   alturaSofia = 5.322 - 0.458 = 4.864  |  alturaZumbi = 0.244 - (-0.853) = 1.097
+//   ZUMBI_ESCALA = 0.008 * (4.864 / 1.097) ≈ 0.0355
+static float         ZUMBI_ESCALA      = 4.0f;
+static const float   ZUMBI_ROT_OFFSET  = 90.0f;
+// Pivot do Zumbi está no quadril (ymin=-0.853). Compensa para pés no chão:
+//   Y_OFFSET = SOFIA_Y_OFFSET - (ymin_zumbi * ZUMBI_ESCALA) + (ymin_sofia * SOFIA_ESCALA)
+//            = 2.0 - (-0.853*0.0355) + (0.458*0.008) ≈ 2.034 → arredondado para 2.03
+static float         ZUMBI_Y_OFFSET    = 3.5f;
+// Escala e offset Y do modelo — ajuste fino após ver o resultado em jogo.
+static const float   BOSS_ESCALA    = 4.3f;
+static const float   BOSS_MODELO_Y  = 3.87f;   // positivo → sobe; negativo → desce
+static const float   BOSS_ROT_OFFSET = 90.0f;  // offset Y (Mixamo Z-up → OpenGL Y-up)
+
 
 // Offset de encaixe — calibre com as teclas DEBUG_PISTOLA e fixe os valores finais.
 // Para desabilitar as teclas de debug, comente o #define abaixo.
@@ -212,7 +243,7 @@ void processarMorteZumbi(EstadoDoJogo& jogo, Zumbi& z) {
     // BOSS MORREU — tratamento especial antes de qualquer lógica de zumbi comum
     // =========================================================================
     if (z.ehBoss) {
-        tocarMorteZumbi(); // som de impacto (reutilizado; troque por som exclusivo se desejar)
+        tocarEfeito("Sons/BossMorte.mp3");
         // Explosão visual em duas ondas de partículas (roxo + dourado)
         criarParticulasMorte(jogo, z.posicao, 0.55f, 0.0f, 1.0f);
         criarParticulasMorte(jogo, z.posicao, 1.0f,  0.8f, 0.0f);
@@ -244,11 +275,11 @@ void processarMorteZumbi(EstadoDoJogo& jogo, Zumbi& z) {
     // XP por tipo (×10 temporário para teste de arquétipos)
     int xp = 1;
     switch (z.tipo) {
-        case RAPIDO:    xp = 20; break;
+        case RAPIDO:    xp = 10; break;
         case TANK:      xp = 50; break;
-        case ATIRADOR:  xp = 30; break;
-        case EXPLOSIVO: xp = 30; break;
-        default:        xp = 10; break;
+        case ATIRADOR:  xp = 300; break;
+        case EXPLOSIVO: xp = 500; break;
+        default:        xp = 2; break;
     }
     jogo.protagonista.xpAtual += xp;
 
@@ -377,22 +408,27 @@ void desenharBloco3D(float cx, float cy_base, float cz,
 
     glBegin(GL_QUADS);
         // Topo
+        glNormal3f( 0.0f,  1.0f,  0.0f);
         glColor3f(rT, gT, bT);
         glVertex3f(x0, y1, z0); glVertex3f(x1, y1, z0);
         glVertex3f(x1, y1, z1); glVertex3f(x0, y1, z1);
         // Frente (Z+)
+        glNormal3f( 0.0f,  0.0f,  1.0f);
         glColor3f(rF, gF, bF);
         glVertex3f(x0, y0, z1); glVertex3f(x1, y0, z1);
         glVertex3f(x1, y1, z1); glVertex3f(x0, y1, z1);
         // Trás (Z-)
+        glNormal3f( 0.0f,  0.0f, -1.0f);
         glColor3f(rB, gB, bB);
         glVertex3f(x1, y0, z0); glVertex3f(x0, y0, z0);
         glVertex3f(x0, y1, z0); glVertex3f(x1, y1, z0);
         // Direita (X+)
+        glNormal3f( 1.0f,  0.0f,  0.0f);
         glColor3f(rR, gR, bR);
         glVertex3f(x1, y0, z1); glVertex3f(x1, y0, z0);
         glVertex3f(x1, y1, z0); glVertex3f(x1, y1, z1);
         // Esquerda (X-)
+        glNormal3f(-1.0f,  0.0f,  0.0f);
         glColor3f(rL, gL, bL);
         glVertex3f(x0, y0, z0); glVertex3f(x0, y0, z1);
         glVertex3f(x0, y1, z1); glVertex3f(x0, y1, z0);
@@ -513,6 +549,45 @@ void desenharMissilOrientado3D(float cx, float cy, float cz, float yaw,
     glPopMatrix();
 }
 
+// ---------------------------------------------------------------------------
+// desenharTrailBala3D — rastro luminoso atrás do projétil (blending aditivo).
+//   Desenha N quads semi-transparentes ao longo de -direção, cada um menor e
+//   mais transparente que o anterior. GL_ONE no destino: auto-accumula glow.
+// ---------------------------------------------------------------------------
+void desenharTrailBala3D(float cx, float cy, float cz,
+                          float dx, float dz,
+                          float cr, float cg, float cb)
+{
+    const int   STEPS     = 7;
+    const float STEP_DIST = 0.20f;
+    const float TAM_BASE  = 0.24f;
+    // perpendicular ao movimento no plano XZ (para o billboard flat)
+    float nx = -dz, nz = dx;
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE);   // aditivo: empilha glow
+    glDepthMask(GL_FALSE);
+    glDisable(GL_LIGHTING);
+
+    glBegin(GL_QUADS);
+    for (int i = 1; i <= STEPS; ++i) {
+        float t     = (float)i / (float)STEPS;
+        float alpha = (1.0f - t) * 0.55f;
+        float h     = TAM_BASE * (1.0f - t * 0.55f);
+        float px    = cx - dx * STEP_DIST * (float)i;
+        float pz    = cz - dz * STEP_DIST * (float)i;
+        glColor4f(cr, cg, cb, alpha);
+        glVertex3f(px + nx * h, cy - h * 0.5f, pz + nz * h);
+        glVertex3f(px - nx * h, cy - h * 0.5f, pz - nz * h);
+        glVertex3f(px - nx * h, cy + h * 0.5f, pz - nz * h);
+        glVertex3f(px + nx * h, cy + h * 0.5f, pz + nz * h);
+    }
+    glEnd();
+
+    glDepthMask(GL_TRUE);
+    glDisable(GL_BLEND);
+}
+
 // =============================================================================
 //  INICIALIZAÇÃO DO ESTADO DO JOGO
 // =============================================================================
@@ -529,7 +604,7 @@ static void inicializarEstadoJogo() {
     g_jogo.protagonista.hp            = 5;
     g_jogo.protagonista.hpMaximo      = 5;
     g_jogo.protagonista.temporizadorIframe = 0.0f;
-    g_jogo.protagonista.duracaoIframe      = 0.35f;
+    g_jogo.protagonista.duracaoIframe      = 0.80f;
     g_jogo.protagonista.xpAtual            = 0;
     g_jogo.protagonista.xpParaProximoNivel = 20;
     g_jogo.protagonista.nivel              = 1;
@@ -637,15 +712,15 @@ static Zumbi criarZumbi(TipoZumbi tipo) {
 
     switch (tipo) {
         case RAPIDO:
-            z.velocidade = 10.0f; z.raioColisao = 0.4f; z.vida = 1;  z.dano = 1; break;
+            z.velocidade = 10.0f; z.raioColisao = 0.6f; z.vida = 1;  z.dano = 1; break;
         case TANK:
-            z.velocidade =  5.0f; z.raioColisao = 0.9f; z.vida = 10; z.dano = 3; break;
+            z.velocidade =  5.0f; z.raioColisao = 1.3f; z.vida = 10; z.dano = 3; break;
         case ATIRADOR:
-            z.velocidade =  6.0f; z.raioColisao = 0.5f; z.vida = 2;  z.dano = 3; break;
+            z.velocidade =  6.0f; z.raioColisao = 0.7f; z.vida = 2;  z.dano = 3; break;
         case EXPLOSIVO:
-            z.velocidade = 10.0f; z.raioColisao = 0.6f; z.vida = 2;  z.dano = 3; break;
+            z.velocidade = 10.0f; z.raioColisao = 0.8f; z.vida = 2;  z.dano = 3; break;
         default: // NORMAL
-            z.velocidade = 8.0f; z.raioColisao = 0.5f; z.vida = 2;  z.dano = 1; break;
+            z.velocidade = 8.0f; z.raioColisao = 0.7f; z.vida = 2;  z.dano = 1; break;
     }
     z.tiroTimer = ATIRADOR_COOLDOWN * ((rand() % 100) / 100.0f); // offset inicial aleatório
     return z;
@@ -784,7 +859,8 @@ static void atualizarJogador(float dt) {
             // Componente na direção de mira: positivo=frente, negativo=costas
             float ang  = g_jogo.stand.anguloMira;
             float dotFwd = idx * std::cos(ang) + idz * std::sin(ang);
-            g_sofia.definirVelocidade(dotFwd >= 0.0f ? 1.0f : -1.0f);
+            float fatorVel = fatorVelocidadeDoNivel(g_jogo.protagonista.upgrades.niveis[VELOCIDADE_UP]);
+            g_sofia.definirVelocidade(dotFwd >= 0.0f ? fatorVel : -fatorVel);
         } else {
             // CORREÇÃO: Congela exatamente no frame 1 quando o jogador parar
             g_sofia.congelarNoFrame(14); 
@@ -834,6 +910,7 @@ static void atualizarZumbis(float dt) {
                 pz.velocidade = PROJETIL_ZUMBI_VEL;
                 pz.dano       = PROJETIL_ZUMBI_DANO;
                 pz.ativo      = true;
+                pz.ehDoBoss   = false;
                 g_jogo.projeteisZumbi.push_back(pz);
             }
         } else {
@@ -909,20 +986,33 @@ static void atualizarParticulas(float dt) {
         p.posicao.x    += p.velocidade.x * dt;
         p.posicao.y    += p.velocidade.y * dt;
         p.posicao.z    += p.velocidade.z * dt;
-        p.velocidade.y -= 9.8f * dt;     // gravidade
+        p.velocidade.y -= 9.8f * dt;
         p.tempoVida    -= dt;
         p.transparencia = p.tempoVida / p.tempoVidaMaximo;
         if (p.tempoVida <= 0.0f) p.ativa = false;
     }
+    // Compacta in-place — mantém vetor pequeno, iterações futuras baratas
+    size_t w = 0;
+    for (size_t i = 0; i < g_jogo.particulas.size(); ++i)
+        if (g_jogo.particulas[i].ativa)
+            g_jogo.particulas[w++] = g_jogo.particulas[i];
+    g_jogo.particulas.resize(w);
 }
 
 static void atualizarFloatingDamage(float dt) {
     for (size_t i = 0; i < g_jogo.numerosFlutuantes.size(); ++i) {
         FloatingDamage& fd = g_jogo.numerosFlutuantes[i];
+        if (fd.tempoRestante <= 0.0f) continue;  // não atualiza expirados
         fd.tempoRestante        -= dt;
         fd.deslocamentoVertical += 2.0f * dt;
         fd.transparencia = fd.tempoRestante / fd.tempoTotal;
     }
+    // Compacta expirados
+    size_t w = 0;
+    for (size_t i = 0; i < g_jogo.numerosFlutuantes.size(); ++i)
+        if (g_jogo.numerosFlutuantes[i].tempoRestante > 0.0f)
+            g_jogo.numerosFlutuantes[w++] = g_jogo.numerosFlutuantes[i];
+    g_jogo.numerosFlutuantes.resize(w);
 }
 
 static void atualizarProjeteisZumbi(float dt) {
@@ -958,6 +1048,12 @@ static void atualizarProjeteisZumbi(float dt) {
                 }
             }
         }
+    // Compacta projéteis inativos — mantém vetor pequeno para iterações futuras
+    size_t w = 0;
+    for (size_t i = 0; i < g_jogo.projeteisZumbi.size(); ++i)
+        if (g_jogo.projeteisZumbi[i].ativo)
+            g_jogo.projeteisZumbi[w++] = g_jogo.projeteisZumbi[i];
+    g_jogo.projeteisZumbi.resize(w);
     }
 
 
@@ -1013,6 +1109,7 @@ static void invocarBoss() {
     g_jogo.tempMensagemBoss   = BOSS_MSG_DURACAO;
     g_jogo.tempoEntradaBoss   = BOSS_ENTRADA_DURACAO;
     g_jogo.bossJaFoiInvocado  = true;
+    tocarEfeito("Sons/BossEntrada.mp3");
 }
 
 // ---------------------------------------------------------------------------
@@ -1027,6 +1124,42 @@ static void atualizarBoss(float dt) {
     if (g_jogo.tempoEntradaBoss > 0.0f) {
         g_jogo.tempoEntradaBoss -= dt;
         if (g_jogo.tempoEntradaBoss < 0.0f) g_jogo.tempoEntradaBoss = 0.0f;
+    }
+
+    // Avança a animação do modelo enquanto o Boss estiver na fase ativa.
+    if (g_cabecaCarregada && g_jogo.fasePartida == FASE_BOSS)
+        g_cabeca.atualizar(dt);
+
+    // Disparo em rajada circular do Boss
+    if (g_jogo.fasePartida == FASE_BOSS) {
+        for (size_t i = 0; i < g_jogo.horda.size(); ++i) {
+            Zumbi& z = g_jogo.horda[i];
+            if (!z.ehBoss || !z.vivo) continue;
+
+            z.tiroTimer -= dt;
+            if (z.tiroTimer <= 0.0f) {
+                z.tiroTimer = BOSS_TIRO_COOLDOWN;
+
+                // Rajada em círculo completo; o offset angular roda com o tempo
+                // criando um padrão espiral que força o jogador a se mover.
+                const float PI2 = 6.28318530f;
+                float offset = g_jogo.tempoSobrevivido * 0.8f;
+                for (int k = 0; k < BOSS_TIRO_COUNT; ++k) {
+                    float ang = offset + (float)k * PI2 / (float)BOSS_TIRO_COUNT;
+                    ProjetilZumbi pz;
+                    pz.posicao    = z.posicao;
+                    pz.direcao.x  = std::cos(ang);
+                    pz.direcao.y  = 0.0f;
+                    pz.direcao.z  = std::sin(ang);
+                    pz.velocidade = BOSS_PROJETIL_VEL;
+                    pz.dano       = BOSS_PROJETIL_DANO;
+                    pz.ativo      = true;
+                    pz.ehDoBoss   = true;
+                    g_jogo.projeteisZumbi.push_back(pz);
+                }
+            }
+            break; // só existe um Boss
+        }
     }
 }
 
@@ -1079,10 +1212,20 @@ static void atualizarSpawn(float dt) {
     // =========================================================================
 
     // Transição FASE_NORMAL → FASE_AGUARDANDO_BOSS ao atingir 4 minutos
+#ifdef DEBUG_BOSS_SPAWN
+    // DEBUG: invoca o Boss direto após 2 s (remove #define DEBUG_BOSS_SPAWN para desligar)
+    if (g_jogo.fasePartida == FASE_NORMAL && g_jogo.tempoSobrevivido >= 2.0f &&
+        !g_jogo.bossJaFoiInvocado) {
+        g_jogo.horda.clear();
+        invocarBoss();
+    }
+#else
     if (g_jogo.fasePartida == FASE_NORMAL &&
         g_jogo.tempoSobrevivido >= BOSS_TEMPO_TRIGGER) {
         g_jogo.fasePartida = FASE_AGUARDANDO_BOSS;
+        tocarEfeito("Sons/Cuidado.mp3");
     }
+#endif
 
     // FASE_AGUARDANDO_BOSS: assim que a arena estiver limpa, invoca o Boss.
     // Spawn já está bloqueado, então "vivos == 0" significa arena realmente vazia.
@@ -1112,7 +1255,8 @@ static void atualizarSpawn(float dt) {
     for (size_t s = 0; s < g_jogo.horda.size(); ++s)
         if (g_jogo.horda[s].vivo) ativosNaHorda++;
 
-    const TipoZumbi tipos[5] = { NORMAL, RAPIDO, TANK, ATIRADOR, EXPLOSIVO };
+    // Especiais primeiro: garantem slots antes dos normais (que têm mult altíssimo)
+    const TipoZumbi tipos[5] = { EXPLOSIVO, ATIRADOR, TANK, RAPIDO, NORMAL };
     float t = g_jogo.tempoSobrevivido;
 
     for (int ti = 0; ti < 5; ++ti) {
@@ -1401,31 +1545,63 @@ static void desenharStand() {
     // a direção do cursor. Se aparecer invertido, ajuste adicionando ±90° ou ±180°.
     float angGraus = s.anguloMira * (180.0f / 3.14159265f);
 
-    // --- Estado GL translúcido -----------------------------------------------
-    glDepthMask(GL_FALSE);
+    // --- Halo no chão (aditivo, aparece antes do corpo) ----------------------
     glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    glDepthMask(GL_FALSE);
+    glDisable(GL_LIGHTING);
+    {
+        const int SEG = 28;
+        float haloR = escala * 2.2f;
+        float pulso  = 0.18f + std::sin(g_jogo.tempoSobrevivido * 4.0f) * 0.08f;
+        glBegin(GL_TRIANGLE_FAN);
+        glColor4f(cr, cg, 0.05f, pulso * alpha);
+        glVertex3f(s.posicao.x + lungeX, 0.02f, s.posicao.z + lungeZ);
+        glColor4f(cr, cg, 0.05f, 0.0f);
+        for (int i = 0; i <= SEG; ++i) {
+            float a = (float)i / SEG * 2.0f * 3.14159265f;
+            glVertex3f(s.posicao.x + lungeX + std::cos(a) * haloR,
+                       0.02f,
+                       s.posicao.z + lungeZ + std::sin(a) * haloR);
+        }
+        glEnd();
+    }
+
+    // --- Corpo fantasma: teapot translúcido + emissivo -----------------------
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDisable(GL_TEXTURE_2D);
-
     glEnable(GL_LIGHTING);
-    glEnable(GL_LIGHT0);
     glEnable(GL_COLOR_MATERIAL);
     glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
+
+    // Luz de fill para o teapot (mesma posição do LIGHT0 do mapa)
     GLfloat lpos[4] = { 0.0f, 20.0f,  5.0f, 1.0f };
     GLfloat lamb[4] = { 0.35f, 0.35f, 0.35f, 1.0f };
     GLfloat ldif[4] = { 1.0f,  1.0f,  1.0f, 1.0f };
     glLightfv(GL_LIGHT0, GL_POSITION, lpos);
     glLightfv(GL_LIGHT0, GL_AMBIENT,  lamb);
     glLightfv(GL_LIGHT0, GL_DIFFUSE,  ldif);
+    glEnable(GL_LIGHT0);
+
+    // Material emissivo: o fantasma "brilha" na cor da tensão
+    GLfloat emissao[] = { cr * 0.55f, cg * 0.55f, 0.0f, 1.0f };
+    GLfloat especular[] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    glMaterialfv(GL_FRONT_AND_BACK, GL_EMISSION, emissao);
+    glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, especular);
+    glMaterialf (GL_FRONT_AND_BACK, GL_SHININESS, 90.0f);
 
     glPushMatrix();
     glTranslatef(s.posicao.x + lungeX, floatY, s.posicao.z + lungeZ);
     glRotatef(-angGraus, 0.0f, 1.0f, 0.0f);
-    glColor4f(cr, cg, 0.0f, alpha);
+    glColor4f(cr, cg, 0.15f, alpha);
     glutSolidTeapot(escala);
     glPopMatrix();
 
     // --- Restaura estado GL --------------------------------------------------
+    GLfloat emZero[]  = { 0.0f, 0.0f, 0.0f, 1.0f };
+    GLfloat specZero[] = { 0.0f, 0.0f, 0.0f, 1.0f };
+    glMaterialfv(GL_FRONT_AND_BACK, GL_EMISSION, emZero);
+    glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, specZero);
     glDisable(GL_COLOR_MATERIAL);
     glDisable(GL_LIGHTING);
     glDisable(GL_BLEND);
@@ -1441,99 +1617,156 @@ static void desenharStand() {
 //   • Efeito de "aparição" durante tempoEntradaBoss (pulso de escala)
 // ---------------------------------------------------------------------------
 static void desenharBoss(const Zumbi& z) {
+
+
     // Efeito de entrada: escala pulsa nos primeiros BOSS_ENTRADA_DURACAO segundos
     float escalaEntrada = 1.0f;
     if (g_jogo.tempoEntradaBoss > 0.0f) {
-        float t   = 1.0f - g_jogo.tempoEntradaBoss / BOSS_ENTRADA_DURACAO; // 0→1
-        float arco = std::sin(t * 3.14159265f * 5.0f);                     // ondas
+        float t    = 1.0f - g_jogo.tempoEntradaBoss / BOSS_ENTRADA_DURACAO;
+        float arco = std::sin(t * 3.14159265f * 5.0f);
         escalaEntrada = 1.0f + arco * 0.35f;
     }
 
-    float s = z.raioColisao * 1.8f * escalaEntrada; // largura base do bloco
-
-    // --- Aura pulsante no chão ------------------------------------------------
+    // Aura pulsante no chão (mantida mesmo com o modelo 3D)
     glDisable(GL_LIGHTING);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     float pulso = 0.25f + std::sin(g_jogo.tempoSobrevivido * 5.0f) * 0.12f;
     glColor4f(0.55f, 0.0f, 1.0f, pulso);
-    desenharCirculo3D(z.posicao.x, 0.02f, z.posicao.z, s * 2.2f,
+    desenharCirculo3D(z.posicao.x, 0.02f, z.posicao.z, BOSS_RAIO_COLISAO * 1.8f,
                       0.55f, 0.0f, 1.0f);
     glDisable(GL_BLEND);
 
-    // --- Corpo principal (roxo escuro) ----------------------------------------
-    float cR = 0.45f, cG = 0.0f, cB = 0.85f;
-    float alturaCorpo = s * 1.8f;
-    desenharBloco3D(z.posicao.x, 0.0f, z.posicao.z,
-                    s, s, alturaCorpo,
-                    cR,         cG, cB,          // topo
-                    cR*0.80f,   cG, cB*0.80f,    // frente
-                    cR*0.60f,   cG, cB*0.60f,    // trás
-                    cR*0.90f,   cG, cB*0.90f,    // direita
-                    cR*0.70f,   cG, cB*0.70f);   // esquerda
-
-    // --- Coroa: 4 espigões dourados no topo -----------------------------------
-    float topoY   = alturaCorpo;
-    float spikeW  = s * 0.28f;
-    float spikeH  = s * 0.55f;
-    float offCroa = s * 0.38f;
-    float ofsX[4] = { offCroa, -offCroa, 0.0f,     0.0f     };
-    float ofsZ[4] = { 0.0f,     0.0f,    offCroa, -offCroa  };
-    for (int sp = 0; sp < 4; ++sp) {
-        desenharBloco3D(z.posicao.x + ofsX[sp], topoY, z.posicao.z + ofsZ[sp],
-                        spikeW, spikeW, spikeH,
-                        1.0f, 0.85f, 0.0f,     // topo dourado
-                        0.9f, 0.70f, 0.0f,
-                        0.7f, 0.55f, 0.0f,
-                        0.95f,0.75f, 0.0f,
-                        0.75f,0.60f, 0.0f);
+    if (!g_cabecaCarregada) {
+        // Fallback: cubo roxo original para quando o modelo não carregou
+        float s = z.raioColisao * 1.8f * escalaEntrada;
+        float cR = 0.45f, cG = 0.0f, cB = 0.85f;
+        float alturaCorpo = s * 1.8f;
+        desenharBloco3D(z.posicao.x, 0.0f, z.posicao.z,
+                        s, s, alturaCorpo,
+                        cR,       cG, cB,
+                        cR*0.80f, cG, cB*0.80f,
+                        cR*0.60f, cG, cB*0.60f,
+                        cR*0.90f, cG, cB*0.90f,
+                        cR*0.70f, cG, cB*0.70f);
+        return;
     }
 
-    // --- Olhos brilhantes (dois blocos brancos na face frontal) ---------------
-    float olhoY  = alturaCorpo * 0.65f;
-    float olhoSz = s * 0.18f;
-    float olhoSx = s * 0.16f;
-    // olho esquerdo
-    desenharBloco3D(z.posicao.x - s * 0.25f, olhoY, z.posicao.z + s * 0.5f,
-                    olhoSx, olhoSz, olhoSz,
-                    1.0f, 1.0f, 1.0f,
-                    0.9f, 0.0f, 0.0f,
-                    0.7f, 0.0f, 0.0f,
-                    1.0f, 1.0f, 1.0f,
-                    1.0f, 1.0f, 1.0f);
-    // olho direito
-    desenharBloco3D(z.posicao.x + s * 0.25f, olhoY, z.posicao.z + s * 0.5f,
-                    olhoSx, olhoSz, olhoSz,
-                    1.0f, 1.0f, 1.0f,
-                    0.9f, 0.0f, 0.0f,
-                    0.7f, 0.0f, 0.0f,
-                    1.0f, 1.0f, 1.0f,
-                    1.0f, 1.0f, 1.0f);
+    // Direção boss → jogador para orientar o modelo de frente ao alvo
+    Jogador& jp = g_jogo.protagonista;
+    float dx = jp.posicao.x - z.posicao.x;
+    float dz = jp.posicao.z - z.posicao.z;
+    float angGraus = std::atan2(dz, dx) * (180.0f / 3.14159265f);
+    float esc = BOSS_ESCALA * escalaEntrada;
+
+    glPushMatrix();
+    glTranslatef(z.posicao.x, BOSS_MODELO_Y, z.posicao.z);
+    glRotatef(-angGraus + BOSS_ROT_OFFSET, 0.0f, 1.0f, 0.0f);
+    glRotatef(90.0f, 1.0f, 0.0f, 0.0f); // Z-up do modelo → Y-up do OpenGL
+    glScalef(esc, esc, esc);
+
+    glEnable(GL_LIGHTING);
+    GLfloat lpos[4] = { 0.0f, 20.0f, 5.0f, 1.0f };
+    GLfloat lamb[4] = { 0.5f,  0.5f,  0.5f, 1.0f };
+    GLfloat ldif[4] = { 1.0f,  1.0f,  1.0f, 1.0f };
+    glLightfv(GL_LIGHT0, GL_POSITION, lpos);
+    glLightfv(GL_LIGHT0, GL_AMBIENT,  lamb);
+    glLightfv(GL_LIGHT0, GL_DIFFUSE,  ldif);
+    glEnable(GL_LIGHT0);
+
+    glEnable(GL_COLOR_MATERIAL);
+    glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
+
+    g_cabeca.renderizar();
+
+    glDisable(GL_COLOR_MATERIAL);
+    glDisable(GL_LIGHTING);
+    glPopMatrix();
+}
+
+// Visual por tipo de zumbi: escala relativa e tint multiplicativo (GL_MODULATE)
+struct ZumbiVisual { float escala; float tR, tG, tB; };
+static ZumbiVisual visualZumbi(TipoZumbi tipo) {
+    switch (tipo) {
+        case NORMAL:    return { 1.00f, 1.00f, 1.00f, 1.00f }; // original
+        case RAPIDO:    return { 0.82f, 0.25f, 1.00f, 0.25f }; // verde vivo, menor
+        case TANK:      return { 1.50f, 0.25f, 0.45f, 1.00f }; // azul forte, grande
+        case ATIRADOR:  return { 0.95f, 1.00f, 1.00f, 0.10f }; // amarelo intenso
+        case EXPLOSIVO: return { 1.15f, 1.00f, 0.25f, 0.15f }; // laranja-vermelho
+        default:        return { 1.00f, 1.00f, 1.00f, 1.00f };
+    }
 }
 
 // Zumbis (e Boss, redirecionado para desenharBoss)
 static void desenharZumbis() {
+    glEnable(GL_LIGHTING);
+    glEnable(GL_NORMALIZE);
+    glEnable(GL_COLOR_MATERIAL);
+    glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
+
+    GLfloat lpos[4] = { 0.0f, 20.0f,  0.0f, 0.0f };
+    GLfloat lamb[4] = { 0.5f,  0.5f,  0.5f, 1.0f };
+    GLfloat ldif[4] = { 0.9f,  0.9f,  0.9f, 1.0f };
+    glLightfv(GL_LIGHT0, GL_POSITION, lpos);
+    glLightfv(GL_LIGHT0, GL_AMBIENT,  lamb);
+    glLightfv(GL_LIGHT0, GL_DIFFUSE,  ldif);
+    glEnable(GL_LIGHT0);
+
+    float tempoBase = glutGet(GLUT_ELAPSED_TIME) / 1000.0f;
+
+    // Calcula CPU skinning UMA vez por frame — reutilizado para todos os zumbis.
+    // Sem isso, N zumbis = N recalculações completas de bone matrices + skinning.
+    if (g_zumbiCarregado)
+        g_zumbi.atualizarPose(tempoBase, g_zumbiNomeAnim);
+
+    // Distância máxima para renderizar o modelo 3D; além disso usa bloco simples (LOD)
+    const float LOD_DIST_SQ = 70.0f * 70.0f;
+
     for (size_t i = 0; i < g_jogo.horda.size(); ++i) {
         const Zumbi& z = g_jogo.horda[i];
         if (!z.vivo) continue;
 
-        // Boss tem renderização própria (tamanho, cor, coroa, aura)
         if (z.ehBoss) {
             desenharBoss(z);
             continue;
         }
 
-        float cR, cG, cB;
-        obterCorBaseZumbi(z.tipo, cR, cG, cB);
-        float s = z.raioColisao * 1.8f;
-        desenharBloco3D(z.posicao.x, 0.0f, z.posicao.z,
-                        s, s, s * 1.2f,
-                        cR, cG, cB,
-                        cR*0.8f, cG*0.8f, cB*0.8f,
-                        cR*0.6f, cG*0.6f, cB*0.6f,
-                        cR*0.9f, cG*0.9f, cB*0.9f,
-                        cR*0.7f, cG*0.7f, cB*0.7f);
+        float dx = g_jogo.protagonista.posicao.x - z.posicao.x;
+        float dz = g_jogo.protagonista.posicao.z - z.posicao.z;
+        float distSq = dx*dx + dz*dz;
+
+        // LOD: bloco simples para zumbis longe da câmera
+        if (!g_zumbiCarregado || distSq > LOD_DIST_SQ) {
+            float cR, cG, cB;
+            obterCorBaseZumbi(z.tipo, cR, cG, cB);
+            float s = z.raioColisao * 1.4f;
+            desenharBloco3D(z.posicao.x, 0.0f, z.posicao.z,
+                            s, s, s * 1.4f,
+                            cR, cG, cB,
+                            cR*0.8f, cG*0.8f, cB*0.8f,
+                            cR*0.6f, cG*0.6f, cB*0.6f,
+                            cR*0.9f, cG*0.9f, cB*0.9f,
+                            cR*0.7f, cG*0.7f, cB*0.7f);
+            continue;
+        }
+
+        ZumbiVisual vis = visualZumbi(z.tipo);
+        float esc = ZUMBI_ESCALA * vis.escala;
+        float angGraus = std::atan2(dz, dx) * (180.0f / 3.14159265f);
+
+        glPushMatrix();
+        glTranslatef(z.posicao.x, ZUMBI_Y_OFFSET, z.posicao.z);
+        glRotatef(-angGraus + ZUMBI_ROT_OFFSET, 0.0f, 1.0f, 0.0f);
+        glScalef(esc, esc, esc);
+
+        g_zumbi.definirTint(vis.tR, vis.tG, vis.tB);
+        g_zumbi.renderizar(); // pose já calculada — só desenha
+        glPopMatrix();
     }
+
+    glDisable(GL_COLOR_MATERIAL);
+    glDisable(GL_NORMALIZE);
+    glDisable(GL_LIGHTING);
 }
 
 // Partículas
@@ -1591,8 +1824,14 @@ static void desenharProjeteisZumbi() {
     for (size_t i = 0; i < g_jogo.projeteisZumbi.size(); ++i) {
         const ProjetilZumbi& pz = g_jogo.projeteisZumbi[i];
         if (!pz.ativo) continue;
-        desenharCirculo3D(pz.posicao.x, 0.1f, pz.posicao.z, 0.3f,
-                          1.0f, 0.55f, 0.0f);
+        if (pz.ehDoBoss) {
+            // Projétil do Boss: roxo, maior
+            desenharCirculo3D(pz.posicao.x, 0.15f, pz.posicao.z, 0.55f,
+                              0.75f, 0.0f, 1.0f);
+        } else {
+            desenharCirculo3D(pz.posicao.x, 0.1f, pz.posicao.z, 0.3f,
+                              1.0f, 0.55f, 0.0f);
+        }
     }
 }
 
@@ -1606,15 +1845,110 @@ static void desenharSkills() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ativarMaterialGlow / desativarMaterialGlow
+//   Ativa GL_EMISSION + GL_SPECULAR alto na cor da bala para que o projétil
+//   brilhe independente da iluminação ambiente. GL_NORMALIZE evita distorção
+//   de normais quando glScalef é usado (ex: missiles).
+// ---------------------------------------------------------------------------
+void ativarMaterialGlow(float cr, float cg, float cb) {
+    glEnable(GL_LIGHTING);
+    glEnable(GL_NORMALIZE);
+    glEnable(GL_COLOR_MATERIAL);
+    glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
+    GLfloat em[]   = { cr * 0.85f, cg * 0.85f, cb * 0.85f, 1.0f };
+    GLfloat spec[] = { 1.0f,       1.0f,       1.0f,       1.0f };
+    glMaterialfv(GL_FRONT_AND_BACK, GL_EMISSION,  em);
+    glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR,  spec);
+    glMaterialf (GL_FRONT_AND_BACK, GL_SHININESS, 128.0f);
+}
+
+void desativarMaterialGlow() {
+    GLfloat emZero[]   = { 0.0f, 0.0f, 0.0f, 1.0f };
+    GLfloat specZero[] = { 0.0f, 0.0f, 0.0f, 1.0f };
+    glMaterialfv(GL_FRONT_AND_BACK, GL_EMISSION,  emZero);
+    glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR,  specZero);
+    glDisable(GL_COLOR_MATERIAL);
+    glDisable(GL_NORMALIZE);
+    glDisable(GL_LIGHTING);
+}
+
+// ---------------------------------------------------------------------------
+// configurarLuzesDinamicas — GL_LIGHT1 (Stand) + GL_LIGHT2–5 (até 4 balas).
+//   Deve ser chamada APÓS configurarCamera() (posição em espaço de mundo).
+//   GL_LIGHT0 fica reservado ao mapa; GL_LIGHT1–7 são de uso dinâmico.
+// ---------------------------------------------------------------------------
+static void configurarLuzesDinamicas() {
+    // --- GL_LIGHT1: Stand/Entidade -------------------------------------------
+    float maxT  = maxTensaoDoNivel(g_jogo.protagonista.upgrades.niveis[TENSAO_UP]);
+    float ratio = (maxT > 0.0f) ? (g_jogo.stand.tensaoAtual / maxT) : 0.0f;
+    if (ratio < 0.0f) ratio = 0.0f;
+    if (ratio > 1.0f) ratio = 1.0f;
+    float sr = ratio, sg = 1.0f - ratio;
+
+    GLfloat posS[] = { g_jogo.stand.posicao.x,
+                       g_jogo.stand.posicao.y + 0.5f,
+                       g_jogo.stand.posicao.z, 1.0f };
+    GLfloat difS[] = { sr * 2.0f, sg * 2.0f, 0.05f, 1.0f };
+    GLfloat ambS[] = { sr * 0.4f, sg * 0.4f, 0.01f, 1.0f };
+    glEnable(GL_LIGHT1);
+    glLightfv(GL_LIGHT1, GL_POSITION,             posS);
+    glLightfv(GL_LIGHT1, GL_DIFFUSE,              difS);
+    glLightfv(GL_LIGHT1, GL_AMBIENT,              ambS);
+    glLightf (GL_LIGHT1, GL_CONSTANT_ATTENUATION,  1.0f);
+    glLightf (GL_LIGHT1, GL_LINEAR_ATTENUATION,    0.0f);
+    glLightf (GL_LIGHT1, GL_QUADRATIC_ATTENUATION, 0.05f);
+
+    // --- GL_LIGHT2–5: até 4 balas ativas (mais balas = mais luz no cenário) --
+    const int LUZ_MAX = 5;   // GL_LIGHT2 … GL_LIGHT5
+    int luzIdx = 2;
+    for (int i = 0; i < g_skills.numSlots() && luzIdx <= LUZ_MAX; ++i) {
+        const SlotSkill& sl = g_skills.slot(i);
+        if (!sl.ativo) continue;
+        bool temCor = (sl.build.forma.corR > 0.001f ||
+                       sl.build.forma.corG > 0.001f ||
+                       sl.build.forma.corB > 0.001f);
+        float cr = temCor ? sl.build.forma.corR : 1.0f;
+        float cg = temCor ? sl.build.forma.corG : 1.0f;
+        float cb = temCor ? sl.build.forma.corB : 0.2f;
+        for (size_t k = 0; k < sl.pool.size() && luzIdx <= LUZ_MAX; ++k) {
+            if (!sl.pool[k].ativo) continue;
+            GLenum luz = (GLenum)(GL_LIGHT0 + luzIdx);
+            GLfloat posB[] = { sl.pool[k].posicao.x,
+                               sl.pool[k].posicao.y + 0.15f,
+                               sl.pool[k].posicao.z, 1.0f };
+            // Difusa alta para iluminar paredes/personagens próximos
+            GLfloat difB[] = { cr * 3.5f, cg * 3.5f, cb * 3.5f, 1.0f };
+            GLfloat ambB[] = { cr * 0.6f, cg * 0.6f, cb * 0.6f, 1.0f };
+            glEnable(luz);
+            glLightfv(luz, GL_POSITION,             posB);
+            glLightfv(luz, GL_DIFFUSE,              difB);
+            glLightfv(luz, GL_AMBIENT,              ambB);
+            glLightf (luz, GL_CONSTANT_ATTENUATION,  1.0f);
+            glLightf (luz, GL_LINEAR_ATTENUATION,    0.0f);
+            glLightf (luz, GL_QUADRATIC_ATTENUATION, 0.12f);
+            luzIdx++;
+        }
+    }
+    for (int j = luzIdx; j <= LUZ_MAX; ++j)
+        glDisable((GLenum)(GL_LIGHT0 + j));
+}
+
+static void desligarLuzesDinamicas() {
+    for (int i = 1; i <= 5; ++i)
+        glDisable((GLenum)(GL_LIGHT0 + i));
+}
+
 static void desenharCena() {
     glClearColor(0.05f, 0.05f, 0.08f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glEnable(GL_DEPTH_TEST);
 
     configurarCamera();
+    configurarLuzesDinamicas();   // ponto de luz do Stand + balas afetam o mapa
 
     desenharMapaBalada();
-    glDisable(GL_LIGHTING);   // mapa usa lighting; o resto do jogo usa glColor3f direto
+    glDisable(GL_LIGHTING);       // mapa usa lighting; o resto do jogo usa glColor3f direto
     desenharZumbis();
     desenharProjeteisZumbi();
     desenharSkills();
@@ -1622,6 +1956,7 @@ static void desenharCena() {
     desenharHitboxDevorar();
     desenharJogador();
     desenharStand();
+    desligarLuzesDinamicas();
 }
 
 // =============================================================================
@@ -1721,6 +2056,131 @@ static int desenharTextoQuebrado(float x, float yTopo, float larguraMax,
         ++nLinhas;
     }
     return nLinhas;
+}
+
+// ---------------------------------------------------------------------------
+// Primitivas 2D reutilizáveis no HUD
+// ---------------------------------------------------------------------------
+static void desenharRetanguloPreenchido(float x, float y, float w, float h,
+                                         float r, float g, float b) {
+    glColor3f(r, g, b);
+    glBegin(GL_QUADS);
+        glVertex2f(x,   y);    glVertex2f(x+w, y);
+        glVertex2f(x+w, y+h);  glVertex2f(x,   y+h);
+    glEnd();
+}
+
+static void desenharContorno(float x, float y, float w, float h,
+                              float r, float g, float b) {
+    glColor3f(r, g, b);
+    glBegin(GL_LINE_LOOP);
+        glVertex2f(x,   y);    glVertex2f(x+w, y);
+        glVertex2f(x+w, y+h);  glVertex2f(x,   y+h);
+    glEnd();
+}
+
+// Ícone bala: corpo retangular + ponta triangular, centrado em (cx, cy)
+static void desenharIconeBala(float cx, float cy,
+                               float r, float g, float b, float esc) {
+    float cw = 8.0f * esc, ch = 14.0f * esc, pt = 8.0f * esc;
+    float bx = cx - cw * 0.5f;
+    float by = cy - (ch + pt) * 0.5f;
+    desenharRetanguloPreenchido(bx, by, cw, ch, r, g, b);
+    glColor3f(r, g, b);
+    glBegin(GL_TRIANGLES);
+        glVertex2f(bx,      by + ch);
+        glVertex2f(bx + cw, by + ch);
+        glVertex2f(cx,      by + ch + pt);
+    glEnd();
+}
+
+// Ícone "+": dois retângulos cruzados, centrado em (cx, cy)
+static void desenharIconePlus(float cx, float cy,
+                               float r, float g, float b, float esc) {
+    float aw = 5.0f * esc, ah = 14.0f * esc;
+    desenharRetanguloPreenchido(cx - aw*0.5f, cy - ah*0.5f, aw, ah, r, g, b);
+    desenharRetanguloPreenchido(cx - ah*0.5f, cy - aw*0.5f, ah, aw, r, g, b);
+}
+
+// ---------------------------------------------------------------------------
+// HUD: fileira de 4 quadrados de atributo da arma (inferior-central)
+// ---------------------------------------------------------------------------
+static void desenharAtributosArma() {
+    const float W = (float)g_winW;
+
+    // Layout — ajuste aqui para reposicionar tudo
+    const float SQ   = 56.0f;   // lado do quadrado (px)
+    const float GAP  = 16.0f;   // espaço entre quadrados
+    const float SB_W = 16.0f;   // largura de cada barrinha de nível
+    const float SB_H =  6.0f;   // altura das barrinhas
+    const float SB_G =  4.0f;   // gap entre barrinhas
+    const float Y_SQ = 18.0f;   // Y base dos quadrados (y=0 = rodapé)
+    const float Y_BAR=  7.0f;   // Y base das barrinhas
+
+    const float totalW = 4.0f * SQ + 3.0f * GAP;
+    const float startX = (W - totalW) * 0.5f;
+
+    // {índice no array niveis[], R, G, B, tipo-ícone: 0=bala 1=plus 2=bala+plus}
+    struct SlotAtrib { int idx; float r, g, b; int icone; };
+    SlotAtrib slots[4] = {
+        { DANO,       0.89f, 0.29f, 0.29f, 0 },
+        { QUANTIDADE, 0.39f, 0.60f, 0.13f, 2 },
+        { CADENCIA,   0.95f, 0.95f, 0.95f, 1 },
+        { PERFURACAO, 0.22f, 0.54f, 0.87f, 0 }
+    };
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    for (int i = 0; i < 4; ++i) {
+        const float qx = startX + i * (SQ + GAP);
+        const float qy = Y_SQ;
+        const float cx = qx + SQ * 0.5f;
+        const float cy = qy + SQ * 0.5f;
+        const float aR = slots[i].r, aG = slots[i].g, aB = slots[i].b;
+        int nivel = g_jogo.protagonista.upgrades.niveis[slots[i].idx];
+
+        // Fundo escuro semi-transparente
+        glColor4f(0.0f, 0.0f, 0.0f, 0.45f);
+        glBegin(GL_QUADS);
+            glVertex2f(qx,    qy);     glVertex2f(qx+SQ, qy);
+            glVertex2f(qx+SQ, qy+SQ); glVertex2f(qx,    qy+SQ);
+        glEnd();
+
+        glDisable(GL_BLEND);
+
+        // Contorno na cor do atributo
+        glLineWidth(1.5f);
+        desenharContorno(qx, qy, SQ, SQ, aR, aG, aB);
+        glLineWidth(1.0f);
+
+        // Ícone centrado
+        if (slots[i].icone == 0) {
+            desenharIconeBala(cx, cy, aR, aG, aB, 1.0f);
+        } else if (slots[i].icone == 1) {
+            desenharIconePlus(cx, cy, aR, aG, aB, 1.0f);
+        } else {
+            // Bala ligeiramente deslocada + "+" pequeno no canto superior direito
+            desenharIconeBala(cx - 4.0f, cy, aR, aG, aB, 1.0f);
+            desenharIconePlus(qx + SQ - 11.0f, qy + SQ - 11.0f, aR, aG, aB, 0.55f);
+        }
+
+        // 3 barrinhas de nível sob o quadrado
+        const float barsW = 3.0f * SB_W + 2.0f * SB_G;
+        const float bx0   = cx - barsW * 0.5f;
+        for (int b = 0; b < 3; ++b) {
+            float bx   = bx0 + b * (SB_W + SB_G);
+            bool  acesa = (nivel > b);
+            desenharRetanguloPreenchido(bx, Y_BAR, SB_W, SB_H,
+                acesa ? aR : 0.25f,
+                acesa ? aG : 0.25f,
+                acesa ? aB : 0.23f);
+        }
+
+        glEnable(GL_BLEND);
+    }
+
+    glDisable(GL_BLEND);
 }
 
 static void desenharBarra(float x, float y, float w, float h,
@@ -1995,6 +2455,9 @@ static void desenharHUD() {
     }
     // =========================================================================
 
+    // --- Quadrados de atributo da arma (inferior-central) ---
+    desenharAtributosArma();
+
     sairModo2D();
 }
 
@@ -2135,7 +2598,6 @@ static void desenharPause() {
 // =============================================================================
 
 static Vetor3D projetarMouseNoMundo(int mx, int my) {
-    // Inversão de Y (OpenGL: y=0 no fundo, GLUT: y=0 no topo)
     int viewport[4];
     double model[16], proj[16];
     glGetIntegerv(GL_VIEWPORT, viewport);
@@ -2143,14 +2605,20 @@ static Vetor3D projetarMouseNoMundo(int mx, int my) {
     glGetDoublev(GL_PROJECTION_MATRIX, proj);
 
     double winY = viewport[3] - my;
-    float depth;
-    glReadPixels(mx, (int)winY, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &depth);
 
-    double wx, wy, wz;
-    gluUnProject(mx, winY, depth, model, proj, viewport, &wx, &wy, &wz);
+    // Interseção analítica com plano Y=0 — não depende de geometria sob o cursor.
+    // glReadPixels de profundidade puxava a mira para o corpo dos inimigos.
+    double nx, ny, nz, fx, fy, fz;
+    gluUnProject(mx, winY, 0.0, model, proj, viewport, &nx, &ny, &nz);
+    gluUnProject(mx, winY, 1.0, model, proj, viewport, &fx, &fy, &fz);
+
+    double dy = fy - ny;
+    float  t  = (dy < -1e-6 || dy > 1e-6) ? (float)(-ny / dy) : 0.0f;
 
     Vetor3D v;
-    v.x = (float)wx; v.y = 0.0f; v.z = (float)wz;
+    v.x = (float)(nx + t * (fx - nx));
+    v.y = 0.0f;
+    v.z = (float)(nz + t * (fz - nz));
     return v;
 }
 
@@ -2158,7 +2626,85 @@ static Vetor3D projetarMouseNoMundo(int mx, int my) {
 //  CALLBACKS GLUT
 // =============================================================================
 
+static void desenharMenuInicial() {
+    entrarModo2D();
+    const float W = (float)g_winW, H = (float)g_winH;
+
+    // Fundo preto sólido
+    glDisable(GL_BLEND);
+    glColor3f(0.0f, 0.0f, 0.0f);
+    glBegin(GL_QUADS);
+        glVertex2f(0, 0); glVertex2f(W, 0);
+        glVertex2f(W, H); glVertex2f(0, H);
+    glEnd();
+
+    // Título
+    const char* titulo = "Festa Zumbi";
+    float tw = (float)larguraTexto(titulo);
+    float tx = W * 0.5f - tw * 0.5f;
+    float ty = H * 0.65f;
+    // Sombra
+    glColor3f(0.4f, 0.0f, 0.2f);
+    glRasterPos2f(tx + 2.0f, ty - 2.0f);
+    for (const char* c = titulo; *c; ++c) glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
+    // Texto rosa
+    glColor3f(1.0f, 0.35f, 0.75f);
+    glRasterPos2f(tx, ty);
+    for (const char* c = titulo; *c; ++c) glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
+
+    // Opções
+    const char* opcoes[2] = { "Iniciar Jogo", "Sair" };
+    for (int i = 0; i < 2; ++i) {
+        float ow = (float)larguraTexto(opcoes[i]);
+        float ox = W * 0.5f - ow * 0.5f;
+        float oy = H * 0.42f - i * 40.0f;
+
+        if (g_menuOpcao == i) {
+            // Highlight: fundo semi-transparente
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glColor4f(1.0f, 0.15f, 0.15f, 0.20f);
+            glBegin(GL_QUADS);
+                glVertex2f(ox - 12.0f, oy - 4.0f);
+                glVertex2f(ox + ow + 12.0f, oy - 4.0f);
+                glVertex2f(ox + ow + 12.0f, oy + 16.0f);
+                glVertex2f(ox - 12.0f, oy + 16.0f);
+            glEnd();
+            glDisable(GL_BLEND);
+
+            // Seta indicadora
+            glColor3f(1.0f, 0.9f, 0.0f);
+            glRasterPos2f(ox - 22.0f, oy);
+            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, '>');
+
+            // Texto selecionado: branco
+            glColor3f(1.0f, 1.0f, 1.0f);
+        } else {
+            // Texto normal: cinza
+            glColor3f(0.55f, 0.55f, 0.55f);
+        }
+        glRasterPos2f(ox, oy);
+        for (const char* c = opcoes[i]; *c; ++c)
+            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
+    }
+
+    // Dica de navegação
+    const char* dica = "W/S ou Setas para navegar  |  ENTER para confirmar";
+    float dw = (float)larguraTexto(dica);
+    glColor3f(0.35f, 0.35f, 0.35f);
+    glRasterPos2f(W * 0.5f - dw * 0.5f, H * 0.12f);
+    for (const char* c = dica; *c; ++c) glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *c);
+
+    sairModo2D();
+}
+
 static void cbDisplay() {
+    if (g_emMenuInicial) {
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        desenharMenuInicial();
+        glutSwapBuffers();
+        return;
+    }
     desenharCena();
     desenharHUD();
     desenharMenuLevelUp();
@@ -2174,6 +2720,8 @@ static void cbIdle() {
     g_ultimoTempo = agora;
     if (dt > 0.05f) dt = 0.05f;   // cap de 50ms para evitar pulos grandes
 
+    if (g_emMenuInicial) { glutPostRedisplay(); return; }
+
     if (!g_jogo.jogoPausado && !g_jogoTerminado) {
         atualizarJogador(dt);
         atualizarDevorar(g_jogo, dt);
@@ -2184,8 +2732,23 @@ static void cbIdle() {
         atualizarParticulas(dt);
         atualizarFloatingDamage(dt);
         atualizarSpawn(dt);
-        atualizarBoss(dt);  // timers visuais do Boss (mensagem + entrada)
-        g_jogo.houveMorteRecente = false;   // resetar hook KILLEDENEMY
+        atualizarBoss(dt);
+        g_jogo.houveMorteRecente = false;
+
+        // Compacta zumbis mortos e gemas coletadas a cada 2s
+        static float s_timerLimpeza = 0.0f;
+        s_timerLimpeza += dt;
+        if (s_timerLimpeza >= 2.0f) {
+            s_timerLimpeza = 0.0f;
+            size_t lw = 0;
+            for (size_t li = 0; li < g_jogo.horda.size(); ++li)
+                if (g_jogo.horda[li].vivo) g_jogo.horda[lw++] = g_jogo.horda[li];
+            g_jogo.horda.resize(lw);
+            lw = 0;
+            for (size_t li = 0; li < g_jogo.gemas.size(); ++li)
+                if (!g_jogo.gemas[li].coletada) g_jogo.gemas[lw++] = g_jogo.gemas[li];
+            g_jogo.gemas.resize(lw);
+        }
     }
 
     glutPostRedisplay();
@@ -2215,7 +2778,25 @@ static void _imprimirOffsetPistola() {
 }
 #endif
 
+static void iniciarJogo() {
+    g_emMenuInicial = false;
+    tocarMusicaFundo(g_musicaSecreta ? "Sons/festa_zumbi.mp3" : "Sons/musica_balada.mp3");
+}
+
 static void cbKeyboard(unsigned char key, int /*x*/, int /*y*/) {
+    // Menu inicial: navegação e confirmação
+    if (g_emMenuInicial) {
+        switch (key) {
+            case 'w': case 'W': g_menuOpcao = (g_menuOpcao + 1) % 2; break;
+            case 's': case 'S': g_menuOpcao = (g_menuOpcao + 1) % 2; break;
+            case '\r': case '\n': // ENTER
+                if (g_menuOpcao == 0) iniciarJogo();
+                else                  exit(0);
+                break;
+        }
+        return;
+    }
+
     switch (key) {
         // Movimento
         case 'w': case 'W': g_teclaW = true; break;
@@ -2330,6 +2911,13 @@ static void cbKeyboardUp(unsigned char key, int /*x*/, int /*y*/) {
     }
 }
 
+static void cbSpecial(int key, int /*x*/, int /*y*/) {
+    if (g_emMenuInicial) {
+        if (key == GLUT_KEY_UP || key == GLUT_KEY_DOWN)
+            g_menuOpcao = (g_menuOpcao + 1) % 2;
+    }
+}
+
 static void cbReshape(int w, int h) {
     g_winW = w;
     g_winH = h;
@@ -2371,7 +2959,6 @@ int main(int argc, char** argv) {
         g_sofia.definirTexturaManual("Sofia.png");
         g_sofia.configurarRootMotion(true, "mixamorig:Hips");
         g_sofia.definirOssoMao("mixamorig:RightHand"); // bone socket da pistola
-        g_sofia.listarOssos(); // lista ossos no console — confirme o nome; ajuste definirOssoMao se preciso
         // Toca a primeira animação encontrada no modelo
         const std::map<std::string,int>& anims = g_sofia.animacoesDisponiveis();
         if (!anims.empty()) {
@@ -2380,6 +2967,28 @@ int main(int argc, char** argv) {
         }
     }
     g_pistolaCarregada = g_pistola.carregar("pistola.glb");
+
+    // Boss — Cabeça.glb com root motion removido; toca 1ª animação em loop.
+    // O nó raiz animado é detectado automaticamente pelo heurístico
+    // "primeiro osso com canal" (_rootBoneEncontrado), então não é preciso
+    // saber o nome exato do bone raiz do arquivo.
+    g_cabecaCarregada = g_cabeca.carregar("Cabeça.glb");
+    if (g_cabecaCarregada) {
+        g_cabeca.configurarRootMotion(true); // zera translação do root bone (in-place)
+        const std::map<std::string,int>& animsBoss = g_cabeca.animacoesDisponiveis();
+        if (!animsBoss.empty())
+            g_cabeca.tocarAnimacao(animsBoss.begin()->first, true);
+    }
+
+    g_zumbiCarregado = g_zumbi.carregar("Zumbi.glb");
+    if (g_zumbiCarregado) {
+        g_zumbi.configurarRootMotion(true);
+        const std::map<std::string,int>& animsZ = g_zumbi.animacoesDisponiveis();
+        if (!animsZ.empty()) {
+            g_zumbiNomeAnim = animsZ.begin()->first;
+            g_zumbi.tocarAnimacao(g_zumbiNomeAnim, true);
+        }
+    }
 
     // 2. Catálogo de skills
     registrarSkillsPadrao();
@@ -2396,6 +3005,7 @@ int main(int argc, char** argv) {
     glutPassiveMotionFunc(cbPassiveMotion);
     glutKeyboardFunc(cbKeyboard);
     glutKeyboardUpFunc(cbKeyboardUp);
+    glutSpecialFunc(cbSpecial);
     glutReshapeFunc(cbReshape);
 
     // 5. OpenGL
@@ -2405,8 +3015,8 @@ int main(int argc, char** argv) {
 
     g_ultimoTempo = glutGet(GLUT_ELAPSED_TIME) / 1000.0f;
 
-    // 6. Áudio
-    tocarMusicaFundo("Sons/musica_balada.mp3"); // Caminho atualizado!
+    // 6. Áudio — começa com a música do menu
+    tocarMusicaFundo("Sons/Menu.mp3");
 
     g_ultimoTempo = glutGet(GLUT_ELAPSED_TIME) / 1000.0f;
 

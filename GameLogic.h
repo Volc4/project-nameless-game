@@ -164,15 +164,15 @@ inline Zumbi invocarZumbi(TipoZumbi tipoDesejado, Vetor3D posicaoInicial) {
 
     switch (tipoDesejado) {
         case NORMAL:
-            z.velocidade = 0.0f; z.raioColisao = 0.75f; z.vida = 2;  break;
+            z.velocidade = 0.0f; z.raioColisao = 1.60f; z.vida = 2;  break;
         case RAPIDO:
-            z.velocidade = 3.0f; z.raioColisao = 0.55f; z.vida = 1;  break;
+            z.velocidade = 3.0f; z.raioColisao = 1.20f; z.vida = 1;  break;
         case TANK:
-            z.velocidade = 1.2f; z.raioColisao = 1.10f; z.vida = 10; break;
+            z.velocidade = 1.2f; z.raioColisao = 2.20f; z.vida = 10; break;
         case ATIRADOR:
-            z.velocidade = 1.8f; z.raioColisao = 0.75f; z.vida = 2;  break;
+            z.velocidade = 1.8f; z.raioColisao = 1.60f; z.vida = 2;  break;
         case EXPLOSIVO:
-            z.velocidade = 2.5f; z.raioColisao = 0.85f; z.vida = 1;  break;
+            z.velocidade = 2.5f; z.raioColisao = 1.70f; z.vida = 1;  break;
     }
     return z;
 }
@@ -669,22 +669,16 @@ inline void processarLevelUp(EstadoDoJogo& jogo) {
 }
 
 inline void limparEntidadesInativas(EstadoDoJogo& jogo) {
-    std::vector<Zumbi> hordaAtiva;
-    for (size_t i = 0; i < jogo.horda.size(); ++i) {
-        if (jogo.horda[i].vivo) hordaAtiva.push_back(jogo.horda[i]);
-    }
-    jogo.horda = hordaAtiva;
+    // Compactação in-place — evita alocação de vetor temporário
+    size_t w = 0;
+    for (size_t i = 0; i < jogo.horda.size(); ++i)
+        if (jogo.horda[i].vivo) jogo.horda[w++] = jogo.horda[i];
+    jogo.horda.resize(w);
 
-    // (compactação de tirosNaTela REMOVIDA — o pool de RuntimeSkill se compacta
-    //  sozinho via compactarPool() ao fim de processarColisoesSkills_Grade.)
-
-    std::vector<GemaXP> gemasVisiveis;
-    for (size_t i = 0; i < jogo.gemas.size(); ++i) {
-        if (!jogo.gemas[i].coletada) { // Apenas mantém as NÃO coletadas
-            gemasVisiveis.push_back(jogo.gemas[i]);
-        }
-    }
-    jogo.gemas = gemasVisiveis;
+    w = 0;
+    for (size_t i = 0; i < jogo.gemas.size(); ++i)
+        if (!jogo.gemas[i].coletada) jogo.gemas[w++] = jogo.gemas[i];
+    jogo.gemas.resize(w);
 }
 
 #endif // GAME_LOGIC_H

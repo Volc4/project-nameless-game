@@ -60,6 +60,19 @@ void desenharArco3D(float cx, float y, float cz,
 void desenharMissilOrientado3D(float cx, float cy, float cz, float yaw,
                                 float cr, float cg, float cb);
 
+// Trail luminoso atrás do projétil — blending aditivo, sem textura.
+//   cx,cy,cz : posição atual do projétil
+//   dx,dz    : direção normalizada do movimento
+//   cr,cg,cb : cor base
+void desenharTrailBala3D(float cx, float cy, float cz,
+                          float dx, float dz,
+                          float cr, float cg, float cb);
+
+// Ativa/desativa material emissivo+especular (glow) na cor do projétil.
+//   Deve envolver qualquer draw call de bala que queira o efeito.
+void ativarMaterialGlow(float cr, float cg, float cb);
+void desativarMaterialGlow();
+
 // ---------------------------------------------------------------------------
 // desenharSkill — despacho de renderização por FormaType. Lê cor/parâmetros
 //   da SkillData (componente Forma) e posição/ângulo da instância runtime.
@@ -75,18 +88,27 @@ inline void desenharSkill(const SkillData& s, const RuntimeSkill& r) {
         case FORMA_RING:
         case FORMA_PRISM: {
                 float tam = r.raioColisao * 0.8f;
-                float py  = r.posicao.y;   // altura real da instância (origem da pistola ou do fantasma)
+                float py  = r.posicao.y;
                 bool temCor = (s.forma.corR > 0.001f ||
                                s.forma.corG > 0.001f ||
                                s.forma.corB > 0.001f);
-                // Armas Inteligentes: homing + cor definida → paralelepípedo orientado.
+                float cr = temCor ? s.forma.corR : 1.0f;
+                float cg = temCor ? s.forma.corG : 1.0f;
+                float cb = temCor ? s.forma.corB : 0.2f;
+
+                // 1. Trail (blending aditivo, antes do corpo)
+                desenharTrailBala3D(r.posicao.x, py + tam * 0.5f, r.posicao.z,
+                                    r.direcao.x, r.direcao.z, cr, cg, cb);
+
+                // 2. Corpo do projétil com material emissivo (glow)
+                ativarMaterialGlow(cr, cg, cb);
+
                 bool ehMissil = (temCor && s.movimento.tipo == MOV_HOMING);
                 if (ehMissil) {
                     float yaw = std::atan2(r.direcao.z, r.direcao.x);
                     desenharMissilOrientado3D(r.posicao.x, py, r.posicao.z, yaw,
-                                              s.forma.corR, s.forma.corG, s.forma.corB);
+                                              cr, cg, cb);
                 } else if (temCor) {
-                    float cr = s.forma.corR, cg = s.forma.corG, cb = s.forma.corB;
                     desenharBloco3D(r.posicao.x, py, r.posicao.z,
                                     tam, tam, tam,
                                     cr,        cg,        cb,
@@ -103,6 +125,8 @@ inline void desenharSkill(const SkillData& s, const RuntimeSkill& r) {
                                     0.90f, 0.90f, 0.05f,
                                     0.65f, 0.65f, 0.0f);
                 }
+
+                desativarMaterialGlow();
                 break;
             }
         case FORMA_BEAM:

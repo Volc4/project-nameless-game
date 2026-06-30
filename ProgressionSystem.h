@@ -416,8 +416,8 @@ inline SkillData aplicarArquetipoNaSkill(SkillData build,
             build.forma.duracao        = alcance / VEL; // expira quando chega no alcance
             build.forma.tickIntervalo  = 0.05f;        // dano frequente na passagem
             build.forma.perfuracao     = PERFURACAO_INFINITA;
-            build.forma.quantidade     = 1;            // SEMPRE um arco; Balas ≠ múltiplos
-            build.forma.spreadAngulo   = 0.0f;
+            build.forma.quantidade     = (upgrades.niveis[QUANTIDADE] >= 3) ? 3 : 1;
+            build.forma.spreadAngulo   = (upgrades.niveis[QUANTIDADE] >= 3) ? 0.35f : 0.0f;
             build.movimento.tipo       = MOV_LINEAR;
             build.movimento.velocidade = VEL;
             build.origem.reavaliarPorFrame = false;

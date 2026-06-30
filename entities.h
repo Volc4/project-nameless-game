@@ -201,6 +201,7 @@ struct ProjetilZumbi {
     float   velocidade;
     int     dano;
     bool    ativo;
+    bool    ehDoBoss;   // true = projétil da rajada do Boss (visual diferente)
 };
 
 // ===========================================================================

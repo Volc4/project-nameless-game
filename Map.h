@@ -145,8 +145,8 @@ inline void desenharGarrafa(float x, float y, float z, float r, float g, float b
 // ===========================================================================
 // BANCADA DO BAR
 // ===========================================================================
-inline void desenharBar() {
-    float bX       =  82.0f;
+inline void desenharBar(float r, float g, float b) {
+    float bX       =  97.9f;
     float bZ0      = -25.0f;
     float bZ1      =  25.0f;
     float bComp    = bZ1 - bZ0;
@@ -155,21 +155,22 @@ inline void desenharBar() {
     glPushMatrix();
     glTranslatef(bX, 0.0f, bCentroZ);
 
-    // -- Corpo da bancada (madeira escura) --
-    setEmissao(0.10f, 0.06f, 0.02f);
-    glColor3f(0.18f, 0.10f, 0.05f);
+    // -- Corpo da bancada: cinza neutro que reage à iluminação da cena --
+    semEmissao();
+    glColor3f(0.40f, 0.40f, 0.43f);
     glPushMatrix(); glTranslatef(0.0f, 1.15f, 0.0f); glScalef(4.2f, 2.3f, bComp); glutSolidCube(1.0f); glPopMatrix();
 
-    // -- Tampo de pedra --
-    glColor3f(0.25f, 0.22f, 0.22f);
+    // -- Tampo de pedra: cinza claro, reage ao beat via GL_LIGHT0 --
+    glColor3f(0.50f, 0.50f, 0.54f);
     glPushMatrix(); glTranslatef(-0.25f, 2.38f, 0.0f); glScalef(4.8f, 0.18f, bComp + 0.4f); glutSolidCube(1.0f); glPopMatrix();
 
-    // -- Friso neon roxo na borda frontal --
+    // -- Friso neon: pulsa na cor da batida --
     glDisable(GL_LIGHTING);
-    setEmissao(0.6f, 0.0f, 0.9f);
-    glColor3f(0.7f, 0.0f, 1.0f);
+    setEmissao(r * 0.9f, g * 0.5f, b * 0.9f);
+    glColor3f(r, g * 0.4f, b);
     glPushMatrix(); glTranslatef(-2.72f, 2.28f, 0.0f); glScalef(0.08f, 0.14f, bComp + 0.4f); glutSolidCube(1.0f); glPopMatrix();
     glEnable(GL_LIGHTING);
+    semEmissao();
 
     // -- Rodapé metálico --
     glColor3f(0.40f, 0.38f, 0.42f);
@@ -178,12 +179,12 @@ inline void desenharBar() {
     semEmissao();
 
     // -- Parede de suporte das prateleiras --
-    setEmissao(0.08f, 0.05f, 0.02f);
-    glColor3f(0.12f, 0.07f, 0.03f);
+    setEmissao(0.04f, 0.04f, 0.05f);
+    glColor3f(0.22f, 0.22f, 0.25f);
     glPushMatrix(); glTranslatef(1.8f, 5.5f, 0.0f); glScalef(0.4f, 9.0f, bComp - 2.0f); glutSolidCube(1.0f); glPopMatrix();
 
     // -- 3 prateleiras horizontais --
-    glColor3f(0.22f, 0.14f, 0.07f);
+    glColor3f(0.38f, 0.38f, 0.42f);
     float altPrat[] = {3.0f, 5.0f, 7.0f};
     for (int i = 0; i < 3; ++i) {
         glPushMatrix(); glTranslatef(1.5f, altPrat[i], 0.0f); glScalef(0.8f, 0.12f, bComp - 2.5f); glutSolidCube(1.0f); glPopMatrix();
@@ -342,24 +343,31 @@ inline void desenharPalco() {
 // CHÃO QUADRICULADO
 // ===========================================================================
 inline void desenharChaoQuadriculado(float rLuz, float gLuz, float bLuz) {
-    glDisable(GL_LIGHTING);
+    (void)rLuz; (void)gLuz; (void)bLuz;
+
+    // Emissive fornece a cor base cinza (não é afetado pela intensidade da cena);
+    // diffuse pequeno permite reação sutil ao GL_LIGHT0 e às PointLights das balas.
+    glColorMaterial(GL_FRONT_AND_BACK, GL_EMISSION);
+    GLfloat matDiff[] = { 0.07f, 0.07f, 0.08f, 1.0f };
+    GLfloat matAmb[]  = { 0.04f, 0.04f, 0.05f, 1.0f };
+    glMaterialfv(GL_FRONT_AND_BACK, GL_DIFFUSE, matDiff);
+    glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT, matAmb);
+
     glPushMatrix();
     glTranslatef(0.0f, -0.05f, 0.0f);
-
     float tamanhoTile = 2.0f;
     float limite      = 100.0f;
-    float forcaLuz    = 0.04f;
 
     glBegin(GL_QUADS);
+    glNormal3f(0.0f, 1.0f, 0.0f);
     for (float x = -limite; x < limite; x += tamanhoTile) {
         for (float z = -limite; z < limite; z += tamanhoTile) {
             int gridX = (int)((x + limite) / tamanhoTile);
             int gridZ = (int)((z + limite) / tamanhoTile);
-            if ((gridX + gridZ) % 2 == 0) {
-                glColor3f(0.08f + rLuz * forcaLuz, 0.08f + gLuz * forcaLuz, 0.10f + bLuz * forcaLuz);
-            } else {
-                glColor3f(0.02f + rLuz * forcaLuz, 0.02f + gLuz * forcaLuz, 0.03f + bLuz * forcaLuz);
-            }
+            if ((gridX + gridZ) % 2 == 0)
+                glColor3f(0.14f, 0.14f, 0.16f);  // tile claro: emissive base
+            else
+                glColor3f(0.04f, 0.04f, 0.05f);  // tile escuro: emissive base
             glVertex3f(x,               0.0f, z);
             glVertex3f(x + tamanhoTile, 0.0f, z);
             glVertex3f(x + tamanhoTile, 0.0f, z + tamanhoTile);
@@ -368,6 +376,10 @@ inline void desenharChaoQuadriculado(float rLuz, float gLuz, float bLuz) {
     }
     glEnd();
     glPopMatrix();
+
+    // Restaura GL_COLOR_MATERIAL para AMBIENT_AND_DIFFUSE (padrão do resto do mapa)
+    semEmissao();
+    glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
 }
 
 // ===========================================================================
@@ -444,11 +456,10 @@ inline void desenharMapaBalada() {
     else if (batida == 1) { r = 0.1f; b = 1.0f; }
     else                  { r = 0.8f; b = 1.0f; }
 
-    desenharChaoQuadriculado(r, g, b);
-
     glEnable(GL_LIGHTING);
     glEnable(GL_LIGHT0);
     glEnable(GL_COLOR_MATERIAL);
+    glEnable(GL_NORMALIZE);
     glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
 
     GLfloat luzAmbiente[] = { r * 0.2f, g * 0.2f, b * 0.2f, 1.0f };
@@ -458,9 +469,11 @@ inline void desenharMapaBalada() {
     glLightfv(GL_LIGHT0, GL_DIFFUSE,  luzDifusa);
     glLightfv(GL_LIGHT0, GL_POSITION, luzDirecao);
 
+    desenharChaoQuadriculado(r, g, b);
+
     desenharParedes(r, g, b);
     desenharPalco();
-    desenharBar();
+    desenharBar(r, g, b);
 
     for (int i = 0; i < NUM_OBSTACULOS; ++i) {
         desenharMesaAlta(OBSTACULOS[i].x, OBSTACULOS[i].z);
@@ -508,6 +521,14 @@ inline void processarColisoesCenario(EstadoDoJogo& jogo) {
     for (size_t j = 0; j < jogo.horda.size(); ++j) {
         if (!jogo.horda[j].vivo) continue;
         resolverColisaoRetangular(jogo.horda[j].posicao, jogo.horda[j].raioColisao, pMinX, pMaxX, pMinZ, pMaxZ);
+    }
+
+    // Bar (parede direita): bX=97.9, corpo de 4.2 de largura → front face em ~95.8
+    float barMinX = 95.5f, barMaxX = 102.0f, barMinZ = -25.5f, barMaxZ = 25.5f;
+    resolverColisaoRetangular(jogo.protagonista.posicao, jogo.protagonista.raioColisao, barMinX, barMaxX, barMinZ, barMaxZ);
+    for (size_t j = 0; j < jogo.horda.size(); ++j) {
+        if (!jogo.horda[j].vivo) continue;
+        resolverColisaoRetangular(jogo.horda[j].posicao, jogo.horda[j].raioColisao, barMinX, barMaxX, barMinZ, barMaxZ);
     }
 
     for (int i = 0; i < NUM_OBSTACULOS; ++i) {

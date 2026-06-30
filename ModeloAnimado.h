@@ -95,6 +95,7 @@ private:
     float tempoAnimacao      = 0.0f;
     bool  emLoop             = true;
     float velocidadeAnimacao = 1.0f; // 1=normal, 0=congelado, -1=reversa
+    float tintR = 1.0f, tintG = 1.0f, tintB = 1.0f; // GL_MODULATE tint (1,1,1 = sem tint)
     bool        mesclagemAtiva          = false;
     int         animacaoSecundaria      = -1;
     float       tempoAnimacaoSecundaria = 0.0f;
@@ -614,6 +615,18 @@ public:
     // 1.0=normal | 0.0=congelado | -1.0=reversa
     void definirVelocidade(float v) { velocidadeAnimacao = v; }
 
+    // Tint multiplicativo sobre a textura (GL_MODULATE). (1,1,1) = sem alteração.
+    void definirTint(float r, float g, float b) { tintR = r; tintG = g; tintB = b; }
+
+    // Só recalcula a pose (CPU skinning) sem desenhar nada.
+    // Útil para calcular uma vez e reusar com renderizar() para N instâncias.
+    void atualizarPose(float tempo, const std::string& nomeAnim) {
+        if (!scene) return;
+        if (!nomeAnim.empty()) tocarAnimacao(nomeAnim, true);
+        tempoAnimacao = tempo;
+        calcularPose();
+    }
+
     // ---------------------------------------------------------------------
     //  Avança o tempo da animação e recalcula a pose + skinning.
     // ---------------------------------------------------------------------
@@ -657,7 +670,7 @@ public:
             if (usaTextura) {
                 glEnable(GL_TEXTURE_2D);
                 glBindTexture(GL_TEXTURE_2D, m.textura);
-                glColor3f(1.0f, 1.0f, 1.0f);
+                glColor3f(tintR, tintG, tintB); // GL_MODULATE: tex × tint (1,1,1 = sem mudança)
             } else {
                 glDisable(GL_TEXTURE_2D);
                 glColor3f(m.corDifusa.r, m.corDifusa.g, m.corDifusa.b);
@@ -745,6 +758,41 @@ public:
     void configurarRootMotion(bool remover, const std::string& ossoRaiz = "") {
         removerRootMotion = remover;
         if (!ossoRaiz.empty()) nomeOssoRaiz = ossoRaiz;
+    }
+
+    // Imprime no console o bounding box de posSkin para calibrar escala/Y offset.
+    void debugImprimirExtensao() const {
+        if (malhas.empty()) { printf("[DEBUG] modelo sem malhas\n"); return; }
+        glm::vec3 mn( 1e9f), mx(-1e9f);
+        int totalVerts = 0;
+        for (const auto& m : malhas) {
+            for (const auto& p : m.posSkin) {
+                mn = glm::min(mn, p);
+                mx = glm::max(mx, p);
+                ++totalVerts;
+            }
+        }
+        printf("[DEBUG] malhas=%d verts=%d  X[%.1f..%.1f] Y[%.1f..%.1f] Z[%.1f..%.1f]\n",
+               (int)malhas.size(), totalVerts,
+               mn.x, mx.x, mn.y, mx.y, mn.z, mx.z);
+    }
+
+    // Renderiza em vermelho sólido sem lighting/textura/depth — diagnóstico de geometria.
+    void debugRenderizar() const {
+        if (!scene || malhas.empty()) return;
+        glDisable(GL_LIGHTING);
+        glDisable(GL_TEXTURE_2D);
+        glDisable(GL_DEPTH_TEST);
+        glColor3f(1.0f, 0.0f, 0.0f);
+        for (const auto& m : malhas) {
+            glBegin(GL_TRIANGLES);
+            for (size_t i = 0; i < m.indices.size(); ++i) {
+                const glm::vec3& p = m.posSkin[m.indices[i]];
+                glVertex3f(p.x, p.y, p.z);
+            }
+            glEnd();
+        }
+        glEnable(GL_DEPTH_TEST);
     }
 };
 
