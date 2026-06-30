@@ -2,21 +2,12 @@
 #define SKILL_POOL_H
 
 // ===========================================================================
-//  SkillPool.h — Pool de instâncias RuntimeSkill
-//
-//  As funções de pool (adicionarAoPool, compactarPool, zerarRuntime,
-//  contarAtivos) foram consolidadas em RuntimeSkill.h junto com a struct,
-//  eliminando a duplicação que causava ODR violations.
-//
-//  Este header existe para retrocompatibilidade: qualquer código que
-//  incluía SkillPool.h continua funcionando sem alteração.
+//  SkillPool.h — Wrapper de retrocompatibilidade; inclui RuntimeSkill.h.
 // ===========================================================================
 
 #include "RuntimeSkill.h"
 
-// zerarRuntime — inicializa um RuntimeSkill como inativo/limpo.
-//   Definida aqui (não em RuntimeSkill.h) para evitar duplicata.
-//   POD, então memset é seguro e barato.
+// Inicializa RuntimeSkill como inativo; memset seguro pois é struct POD.
 #include <cstring>
 inline void zerarRuntime(RuntimeSkill& r) {
     std::memset(&r, 0, sizeof(RuntimeSkill));
@@ -24,7 +15,7 @@ inline void zerarRuntime(RuntimeSkill& r) {
     r.idAlvo = -1;
 }
 
-// contarAtivos — utilitário de diagnóstico/HUD.
+// Conta instâncias ativas num pool — usado por HUD e diagnóstico.
 #include <vector>
 inline int contarAtivos(const std::vector<RuntimeSkill>& pool) {
     int n = 0;

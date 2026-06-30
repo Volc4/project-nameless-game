@@ -2,38 +2,25 @@
 #define SKILL_REGISTRY_H
 
 // ===========================================================================
-//  SkillRegistry.h — Catálogo de habilidades NOMEADAS (Fase 5)
+//  SkillRegistry.h — Único lugar onde skills ganham nome concreto.
 //
-//  Este é o ÚNICO lugar onde habilidades concretas ganham nome. Cada uma é
-//  montada por composição de componentes-dados (Forma + Movimento + Origem +
-//  Efeito) e registrada na SkillFactory por identificador textual.
-//
-//  O SkillManager NUNCA inclui este arquivo nem conhece "Laser"/"Meteoro".
-//  Apenas Main.cpp (ou o bootstrap do jogo) chama registrarSkillsPadrao()
-//  uma vez na inicialização. Adicionar habilidade = adicionar uma função
-//  de build + uma linha de RegistrarSkill aqui. Nada mais no motor.
-//
-//  Estas são as habilidades da Parte 11 do documento de arquitetura,
-//  expressas exclusivamente como dados.
-//
-//  C++98: funções inline que devolvem SkillData (POD).
+//  Cada build*() monta uma SkillData por composição de componentes.
+//  registrarSkillsPadrao() popula a SkillFactory uma vez na inicialização.
+//  SkillManager nunca inclui este arquivo.
 // ===========================================================================
 
 #include "SkillTypes.h"
 #include "SkillCatalog.h"
 #include "SkillFactory.h"
 
-// ---------------------------------------------------------------------------
-// Helper: começa de buildBase() e devolve para customização.
-// ---------------------------------------------------------------------------
 inline SkillData _novaSkill() { return buildBase(); }
 
-// --- Disparo básico (paridade com o tiro atual) ----------------------------
+// --- Disparo básico ---
 inline SkillData buildDisparo() {
     return buildBase();
 }
 
-// --- Pilar Celestial de Fogo: Area + Fall + RandomMap + Burn ----------------
+// --- Pilar Celestial de Fogo: Area + Fall + RandomMap + Burn ---
 inline SkillData buildPilarFogo() {
     SkillData s = _novaSkill();
     s.forma.tipo          = FORMA_AREA;
@@ -52,7 +39,7 @@ inline SkillData buildPilarFogo() {
     return s;
 }
 
-// --- Tempestade Orbital: Ring + Orbit + Player + Shock ----------------------
+// --- Tempestade Orbital: Ring + Orbit + Player + Shock ---
 inline SkillData buildTempestadeOrbital() {
     SkillData s = _novaSkill();
     s.forma.tipo        = FORMA_RING;
@@ -68,7 +55,7 @@ inline SkillData buildTempestadeOrbital() {
     return s;
 }
 
-// --- Lança de Luz: Beam + Stationary + Stand + Damage -----------------------
+// --- Lança de Luz: Beam + Stationary + Stand + Damage ---
 inline SkillData buildLancaDeLuz() {
     SkillData s = _novaSkill();
     s.forma.tipo          = FORMA_BEAM;
@@ -83,7 +70,7 @@ inline SkillData buildLancaDeLuz() {
     return s;
 }
 
-// --- Bumerangue Congelante: Projectile + Boomerang + Stand + Freeze ---------
+// --- Bumerangue Congelante: Projectile + Boomerang + Stand + Freeze ---
 inline SkillData buildBumerangueCongelante() {
     SkillData s = _novaSkill();
     s.forma.tipo        = FORMA_PROJECTILE;
@@ -99,7 +86,7 @@ inline SkillData buildBumerangueCongelante() {
     return s;
 }
 
-// --- Cadeia Elétrica: Chain + Stationary + NearestEnemy + Shock -------------
+// --- Cadeia Elétrica: Chain + Stationary + NearestEnemy + Shock ---
 inline SkillData buildCadeiaEletrica() {
     SkillData s = _novaSkill();
     s.forma.tipo     = FORMA_CHAIN;
@@ -112,16 +99,10 @@ inline SkillData buildCadeiaEletrica() {
     return s;
 }
 
-// ---------------------------------------------------------------------------
-// registrarSkillsPadrao — chamado UMA vez na inicialização (Main.cpp).
-//   Popula a SkillFactory. Depois disso, qualquer parte do jogo cria skills
-//   por nome/id sem conhecer detalhes. O SkillManager nunca chama isto.
-// ---------------------------------------------------------------------------
+// Popula a SkillFactory — chamado uma vez em main().
+// Armas Inteligentes são registradas separadamente por registrarArmasInteligentes().
 inline void registrarSkillsPadrao() {
     RegistrarSkill("Disparo",            buildDisparo());
-    // (As Armas Inteligentes — MissilVampirico, MissilGuiado, BombaGuiada —
-    //  são registradas por registrarArmasInteligentes() em ArmaInteligente.h,
-    //  com builds explícitas por nível. Chamado em seguida no bootstrap.)
     RegistrarSkill("PilarFogo",          buildPilarFogo());
     RegistrarSkill("TempestadeOrbital",  buildTempestadeOrbital());
     RegistrarSkill("LancaDeLuz",         buildLancaDeLuz());

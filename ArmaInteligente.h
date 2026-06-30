@@ -2,17 +2,10 @@
 #define ARMA_INTELIGENTE_H
 
 // ===========================================================================
-//  ArmaInteligente.h — Três armas automáticas guiadas (homing)
+//  ArmaInteligente.h — Três armas homing automáticas (exclusividade mútua).
 //
-//  REGRAS:
-//   - Apenas UMA arma inteligente equipada por partida (exclusividade).
-//   - Cada arma tem 3 níveis; nível n = n projéteis guiados por disparo.
-//   - Cooldown fixo: AI_COOLDOWN (1.5 s) em todas as armas.
-//   - Armas são autônomas (cooldown > 0): NÃO precisam do clique do mouse.
-//   - Isentas de upgrades clássicos de atributo (DANO/CADÊNCIA/PERFURAÇÃO/
-//     QUANTIDADE) — progressão própria via nível. Ver ProgressionSystem.h.
-//
-//  TUNING — altere aqui para ajustar todas as armas de uma vez:
+//  Cooldown fixo AI_COOLDOWN; nível n = n projéteis. Isentas de upgrades
+//  clássicos — progressão própria via nível em ProgressionSystem.h.
 // ===========================================================================
 
 #include "SkillTypes.h"
@@ -21,9 +14,6 @@
 #include "SkillInventory.h"
 #include "Entities.h"
 
-// ---------------------------------------------------------------------------
-// Constantes de tuning — centralizadas para fácil ajuste
-// ---------------------------------------------------------------------------
 static const float AI_COOLDOWN       = 1.5f;   // intervalo de auto-disparo (s)
 static const float AI_VELOCIDADE     = 22.0f;  // velocidade dos mísseis (u/s)
 static const float AI_TAXA_CORRECAO  = 0.60f;  // fator de correção de rota homing [0,1]
@@ -34,9 +24,6 @@ static const int   AI_DANO_GUIADO    = 2;      // dano por acerto do Guiado (~2)
 static const int   AI_DANO_BOMBA     = 3;      // dano da explosão da Bomba (~3)
 static const float AI_RAIO_EXPLOSAO  = 2.5f;   // raio AoE da Bomba Guiada
 
-// ---------------------------------------------------------------------------
-// Identificadores das três armas inteligentes
-// ---------------------------------------------------------------------------
 enum ArmaInteligenteId {
     ARMA_MISSIL_VAMPIRICO = 0,
     ARMA_MISSIL_GUIADO,
@@ -46,7 +33,7 @@ enum ArmaInteligenteId {
 
 #define NIVEL_MAX_ARMA_INTELIGENTE 3
 
-// Chave textual na factory
+// Chave na SkillFactory para resolução de id.
 inline const char* nomeArmaInteligente(int arma) {
     switch (arma) {
         case ARMA_MISSIL_VAMPIRICO: return "MissilVampirico";
@@ -56,7 +43,7 @@ inline const char* nomeArmaInteligente(int arma) {
     }
 }
 
-// Nome exibido no menu de level-up
+// Nome exibido no menu de level-up.
 inline const char* tituloArmaInteligente(int arma) {
     switch (arma) {
         case ARMA_MISSIL_VAMPIRICO: return "Missil Vampirico";
@@ -66,15 +53,9 @@ inline const char* tituloArmaInteligente(int arma) {
     }
 }
 
-// ===========================================================================
-//  BUILDS POR NÍVEL
-//  nivel 1 → 1 projétil | nivel 2 → 2 | nivel 3 → 3 (forma.quantidade = nivel)
-// ===========================================================================
+// forma.quantidade = nivel (1-3 projéteis); cada build usa perfuracao para controlar AoE/cura.
 
-// ---------------------------------------------------------------------------
-// 1. MÍSSIL VAMPÍRICO (VERMELHO) — homing, alvo único, cura +1 ao acertar
-//    forma.perfuracao = 0: some no primeiro zumbi e cura a protagonista.
-// ---------------------------------------------------------------------------
+// Homing alvo único (perfuracao=0): some no impacto e cura +1.
 inline SkillData buildMissilVampiricoNivel(int nivel) {
     SkillData s = buildBase();
     s.forma.tipo         = FORMA_PROJECTILE;
@@ -96,10 +77,7 @@ inline SkillData buildMissilVampiricoNivel(int nivel) {
     return s;
 }
 
-// ---------------------------------------------------------------------------
-// 2. MÍSSIL GUIADO (AZUL) — homing, perfura até 3 zumbis (perfuracao = 2)
-//    Motor: hits = perfuracao + 1, portanto perfuracao=2 → 3 acertos.
-// ---------------------------------------------------------------------------
+// Homing perfurante (perfuracao=2 → 3 acertos: hits = perfuracao+1).
 inline SkillData buildMissilGuiadoNivel(int nivel) {
     SkillData s = buildBase();
     s.forma.tipo         = FORMA_PROJECTILE;
@@ -120,11 +98,7 @@ inline SkillData buildMissilGuiadoNivel(int nivel) {
     return s;
 }
 
-// ---------------------------------------------------------------------------
-// 3. BOMBA GUIADA (LARANJA) — homing, explode em área ao acertar
-//    EFE_EXPLOSION: valor = dano, magnitude = raio AoE.
-//    perfuracao = 0: para no primeiro zumbi e a explosão irradia.
-// ---------------------------------------------------------------------------
+// Homing que explode em área ao acertar (EFE_EXPLOSION; magnitude = raio AoE).
 inline SkillData buildBombaGuiadaNivel(int nivel) {
     SkillData s = buildBase();
     s.forma.tipo         = FORMA_PROJECTILE;
@@ -147,9 +121,7 @@ inline SkillData buildBombaGuiadaNivel(int nivel) {
     return s;
 }
 
-// ---------------------------------------------------------------------------
-// buildArmaInteligente — dispatcher (arma, nivel) → SkillData
-// ---------------------------------------------------------------------------
+// Dispatcher (arma, nivel) → SkillData; clamp nivel para [1, MAX].
 inline SkillData buildArmaInteligente(int arma, int nivel) {
     if (nivel < 1) nivel = 1;
     if (nivel > NIVEL_MAX_ARMA_INTELIGENTE) nivel = NIVEL_MAX_ARMA_INTELIGENTE;
@@ -160,10 +132,6 @@ inline SkillData buildArmaInteligente(int arma, int nivel) {
         default:                    return buildBase();
     }
 }
-
-// ===========================================================================
-//  CLASSIFICAÇÃO E EXCLUSIVIDADE
-// ===========================================================================
 
 inline bool ehArmaInteligente(int idFactory) {
     for (int a = 0; a < TOTAL_ARMAS_INTELIGENTES; ++a) {
@@ -189,21 +157,19 @@ inline int armaInteligenteEquipada(const InventarioSkills& inv) {
     return -1;
 }
 
-// Pode equipar esta arma inteligente? Só se NENHUMA outra estiver equipada.
+// False se outra arma inteligente já estiver equipada (exclusividade por partida).
 inline bool podeEquiparArmaInteligente(const InventarioSkills& inv, int idFactory) {
     int atual = armaInteligenteEquipada(inv);
     return (atual < 0 || atual == idFactory);
 }
 
-// Já chegou ao nível máximo? (não deve mais ser oferecida para evoluir)
+// True se no nível máximo — não deve ser ofertada no menu de evolução.
 inline bool armaInteligenteNoMaximo(const InventarioSkills& inv, int idFactory) {
     if (idFactory < 0) return false;
     return inv.nivelSkill[idFactory] >= NIVEL_MAX_ARMA_INTELIGENTE;
 }
 
-// ---------------------------------------------------------------------------
-// registrarArmasInteligentes — registra as 3 armas (nível 1) na factory.
-// ---------------------------------------------------------------------------
+// Registra as 3 armas (nível 1) na SkillFactory — chamado após registrarSkillsPadrao().
 inline void registrarArmasInteligentes() {
     RegistrarSkill("MissilVampirico", buildArmaInteligente(ARMA_MISSIL_VAMPIRICO, 1));
     RegistrarSkill("MissilGuiado",    buildArmaInteligente(ARMA_MISSIL_GUIADO, 1));

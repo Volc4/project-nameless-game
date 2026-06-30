@@ -2,36 +2,17 @@
 #define SKILL_RENDER_H
 
 // ===========================================================================
-//  SkillRender.h — Renderização data-driven, dependente APENAS da Forma
-//                  (Fase 5 — "a renderização deve depender apenas deste
-//                   componente")
+//  SkillRender.h — Despacho de renderização por FormaType.
 //
-//  PAPEL
-//  -----
-//  O render loop (Main.cpp) não conhece "Laser" nem "Disco". Ele chama
-//  desenharSkill(SkillData, RuntimeSkill) e o despacho por FormaType decide
-//  a geometria visual. Adicionar uma forma nova = um case aqui, sem tocar no
-//  loop de desenho nem no SkillManager.
-//
-//  DESACOPLAMENTO
-//  --------------
-//  Este header NÃO faz #include <GL/glut.h>. Ele depende de um conjunto mínimo
-//  de PRIMITIVAS DE DESENHO declaradas adiante (definidas em Main.cpp com GL
-//  real). Assim a lógica de "qual forma desenha o quê" fica isolada e
-//  testável, e o GL fica concentrado em um lugar só.
-//
-//  C++98: switch sobre enum, sem classes, sem ponteiros donos.
+//  Não inclui GL diretamente; depende das primitivas declaradas abaixo,
+//  definidas em DrawPrimitives3D.h. Adicionar uma forma nova = novo case
+//  em desenharSkill(), sem tocar no loop de desenho.
 // ===========================================================================
 
 #include "SkillTypes.h"
 #include <cmath>   // std::atan2
 
-// ---------------------------------------------------------------------------
-// CONTRATO DE PRIMITIVAS (definidas em Main.cpp, onde o GL existe).
-//   São blocos de desenho genéricos; nenhuma "sabe" o que é uma skill.
-// ---------------------------------------------------------------------------
-
-// Bloco 3D (cubo colorido) — assinatura já existente em Main.cpp.
+// Declarações das primitivas GL definidas em DrawPrimitives3D.h.
 void desenharBloco3D(float cx, float cy_base, float cz,
                      float lx, float lz, float altura,
                      float rT, float gT, float bT,
@@ -40,45 +21,30 @@ void desenharBloco3D(float cx, float cy_base, float cz,
                      float rR, float gR, float bR,
                      float rL, float gL, float bL);
 
-// Primitivas novas, pequenas e genéricas (definidas em Main.cpp na Fase 5):
 void desenharLinha3D(float x0, float y, float z0,
                      float x1, float z1,
                      float largura,
-                     float r, float g, float b);              // Beam/Wall
+                     float r, float g, float b);
 void desenharCirculo3D(float cx, float y, float cz,
                        float raio,
-                       float r, float g, float b);            // Area/Aura/Ring/Disco
+                       float r, float g, float b);
 void desenharArco3D(float cx, float y, float cz,
                     float raioInterno, float raioExterno,
                     float anguloCentral, float meiaAbertura,
-                    float r, float g, float b);               // Arc/Meia-Lua
+                    float r, float g, float b);
 
-// Paralelepípedo orientado pela direção — usado pelas 3 Armas Inteligentes.
-//   cx, cy, cz : centro XYZ do projétil (Y vem de r.posicao.y para seguir a origem)
-//   yaw        : atan2(direcao.z, direcao.x) — orienta o eixo longo
-//   cr/cg/cb   : cor base da arma (definida em FormaData.corR/G/B)
+// yaw = atan2(direcao.z, direcao.x); orienta o eixo longo do projétil.
 void desenharMissilOrientado3D(float cx, float cy, float cz, float yaw,
                                 float cr, float cg, float cb);
 
-// Trail luminoso atrás do projétil — blending aditivo, sem textura.
-//   cx,cy,cz : posição atual do projétil
-//   dx,dz    : direção normalizada do movimento
-//   cr,cg,cb : cor base
 void desenharTrailBala3D(float cx, float cy, float cz,
                           float dx, float dz,
                           float cr, float cg, float cb);
 
-// Ativa/desativa material emissivo+especular (glow) na cor do projétil.
-//   Deve envolver qualquer draw call de bala que queira o efeito.
 void ativarMaterialGlow(float cr, float cg, float cb);
 void desativarMaterialGlow();
 
-// ---------------------------------------------------------------------------
-// desenharSkill — despacho de renderização por FormaType. Lê cor/parâmetros
-//   da SkillData (componente Forma) e posição/ângulo da instância runtime.
-//   Cores default amarelas para manter paridade visual com o projétil atual;
-//   builds podem sobrescrever via campos futuros de cor em FormaData.
-// ---------------------------------------------------------------------------
+// Despacha a geometria certa pelo FormaType; cor default amarela quando FormaData.cor* = 0.
 inline void desenharSkill(const SkillData& s, const RuntimeSkill& r) {
     if (!r.ativo) return;
 
@@ -96,11 +62,8 @@ inline void desenharSkill(const SkillData& s, const RuntimeSkill& r) {
                 float cg = temCor ? s.forma.corG : 1.0f;
                 float cb = temCor ? s.forma.corB : 0.2f;
 
-                // 1. Trail (blending aditivo, antes do corpo)
                 desenharTrailBala3D(r.posicao.x, py + tam * 0.5f, r.posicao.z,
                                     r.direcao.x, r.direcao.z, cr, cg, cb);
-
-                // 2. Corpo do projétil com material emissivo (glow)
                 ativarMaterialGlow(cr, cg, cb);
 
                 bool ehMissil = (temCor && s.movimento.tipo == MOV_HOMING);
@@ -131,7 +94,6 @@ inline void desenharSkill(const SkillData& s, const RuntimeSkill& r) {
             }
         case FORMA_BEAM:
         case FORMA_WALL: {
-            // Linha da posição na direção, comprimento da forma.
             float x1 = r.posicao.x + r.direcao.x * s.forma.comprimento;
             float z1 = r.posicao.z + r.direcao.z * s.forma.comprimento;
             desenharLinha3D(r.posicao.x, r.posicao.y, r.posicao.z,
@@ -156,8 +118,7 @@ inline void desenharSkill(const SkillData& s, const RuntimeSkill& r) {
             break;
         }
         case FORMA_WAVE: {
-            // frente de onda: linha perpendicular à direção, largura da frente
-            float px = -r.direcao.z, pz = r.direcao.x;     // perpendicular
+            float px = -r.direcao.z, pz = r.direcao.x;  // perpendicular à direção
             float meia = s.forma.largura * 0.5f;
             desenharLinha3D(r.posicao.x - px * meia, 0.06f, r.posicao.z - pz * meia,
                             r.posicao.x + px * meia,        r.posicao.z + pz * meia,
@@ -166,7 +127,6 @@ inline void desenharSkill(const SkillData& s, const RuntimeSkill& r) {
             break;
         }
         case FORMA_CHAIN: {
-            // ponto de salto: bloco pequeno azulado
             const float L = 0.18f, ALT = 0.18f;
             desenharBloco3D(r.posicao.x, r.posicao.y, r.posicao.z,
                             L, L, ALT,
@@ -182,11 +142,7 @@ inline void desenharSkill(const SkillData& s, const RuntimeSkill& r) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// desenharTodasSkills — itera o pool e desenha cada instância pela sua Forma.
-//   Chamado pelo render loop em vez do antigo laço sobre tirosNaTela.
-//   Recebe a build ativa (todas as instâncias do pool a compartilham) e o pool.
-// ---------------------------------------------------------------------------
+// Itera o pool e delega cada instância a desenharSkill().
 inline void desenharTodasSkills(const SkillData& buildAtiva,
                                 const RuntimeSkill* pool, int n) {
     for (int i = 0; i < n; ++i)

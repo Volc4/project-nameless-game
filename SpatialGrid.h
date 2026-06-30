@@ -1,12 +1,9 @@
 // ===========================================================================
-//  SpatialGrid_updated.h — Versão com suporte ao SkillManager
+//  SpatialGrid.h — Grade espacial para aceleração de colisões
 //
-//  ÚNICA MUDANÇA em relação ao original:
-//    processarColisoesTiros_Grade() recebe `const SkillManager& skills`
-//    e lê flags de efeitoCuraVida / efeitoDrenarTensao em vez de comparar
-//    jogo.stand.tipoDisparoAtual.
-//
-//  Todo o resto — grade, células, construção, consulta — é idêntico.
+//  Divide a arena em células de TAMANHO_CELULA x TAMANHO_CELULA.
+//  Cada frame: construirGrade() indexa zumbis vivos; obterInimigosVizinhos()
+//  retorna apenas os índices das 9 células vizinhas ao ponto consultado.
 // ===========================================================================
 
 #ifndef SPATIAL_GRID_UPDATED_H
@@ -22,13 +19,13 @@ const float LIMITE_GRADE   = 180.0f;
 const int   NUM_CELULAS    = 90;
 
 struct CelulaEspacial {
-    std::vector<int> inimigos;
-    // (campo projeteis REMOVIDO — instancias vivem no pool do SkillManager)
+    std::vector<int> inimigos;  // índices em EstadoDoJogo::horda
 };
 
 struct GradeEspacial {
     CelulaEspacial celulas[NUM_CELULAS][NUM_CELULAS];
 
+    // Clamp de coordenada de mundo para índice de célula [0, NUM_CELULAS).
     int coordParaCelula(float coord) const {
         float normalizado = (coord + LIMITE_GRADE) / TAMANHO_CELULA;
         int   idx         = (int)floorf(normalizado);
@@ -37,6 +34,7 @@ struct GradeEspacial {
         return idx;
     }
 
+    // Esvazia todos os buckets — chamada antes de construirGrade() a cada frame.
     void limparGrade() {
         for (int l = 0; l < NUM_CELULAS; ++l)
             for (int c = 0; c < NUM_CELULAS; ++c) {
@@ -44,6 +42,7 @@ struct GradeEspacial {
             }
     }
 
+    // Reconstrói a grade do zero com os zumbis vivos do frame atual.
     void construirGrade(const EstadoDoJogo& jogo) {
         limparGrade();
         for (int i = 0; i < (int)jogo.horda.size(); ++i) {
@@ -53,11 +52,9 @@ struct GradeEspacial {
             int lin = coordParaCelula(z.posicao.z);
             celulas[lin][col].inimigos.push_back(i);
         }
-        // (indexação de projéteis REMOVIDA — o motor data-driven consulta a grade
-        //  apenas por inimigos; as instâncias RuntimeSkill vivem no pool do
-        //  SkillManager e são iteradas diretamente em processarColisoesSkills_Grade.)
     }
 
+    // Coleta índices das 9 células ao redor de (posX, posZ) sem testar distância real.
     void obterInimigosVizinhos(float posX, float posZ,
                                 std::vector<int>& saida) const {
         saida.clear();
@@ -77,23 +74,14 @@ struct GradeEspacial {
     }
 };
 
-// ---------------------------------------------------------------------------
-// Auxiliar interno
-// ---------------------------------------------------------------------------
+// True se idx já está no array arr[0..qtd-1] — evita acertar o mesmo zumbi duas vezes por frame.
 inline bool jaAcertouEsteZumbi_sg(const int* arr, int qtd, int idx) {
     for (int i = 0; i < qtd; ++i)
         if (arr[i] == idx) return true;
     return false;
 }
 
-// (processarColisoesTiros_Grade legado REMOVIDO — substituido por
-//  processarColisoesSkills_Grade em SkillManager.h, motor data-driven.)
-
-// ---------------------------------------------------------------------------
-// processarColisaoZumbiJogador_Grade — implementada em Main.cpp
-// (a definição inline foi removida para evitar ODR violation: Main.cpp
-//  precisa acessar g_jogoTerminado, portanto é a única TU que a define.)
-// ---------------------------------------------------------------------------
+// Declaração; definida em Main.cpp porque acessa g_jogoTerminado (global de TU).
 void processarColisaoZumbiJogador_Grade(EstadoDoJogo& jogo,
                                         GradeEspacial& grade,
                                         float deltaTime);

@@ -1,40 +1,18 @@
 #ifndef RUNTIME_SKILL_H
 #define RUNTIME_SKILL_H
 
-// RuntimeSkill.h — estado de instancia das skills em execucao
+// RuntimeSkill.h — estado mutável de uma instância viva de uma SkillData.
 //
-// PRINCIPIO DE SEPARACAO:
-//   SkillData  = configuracao IMUTAVEL (o que a skill e)
-//   RuntimeSkill = estado MUTAVEL de uma instancia viva (onde ela esta)
+// SkillData = configuração imutável; RuntimeSkill = onde e como ela está.
+// N instâncias podem compartilhar um único SkillData por índice. POD puro.
 //
-// Mil instancias podem compartilhar uma unica SkillData por indice.
-// Toda a struct e POD puro: sem construtores, sem ponteiros donos,
-// memcpy-safe e serializavel trivialmente.
-//
-// Dependencias: Entities.h (Vetor3D) e os enums de SkillTypes.h.
-// NÃO incluímos SkillTypes.h aqui para evitar ciclo:
-//   SkillTypes.h → RuntimeSkill.h → SkillTypes.h
-// Quando RuntimeSkill.h é incluído por SkillTypes.h, todos os enums
-// necessários (EfeitoType, FormaType…) já foram definidos acima naquele
-// mesmo arquivo, então os guards evitam a recursão e o compilador os vê.
-// Quando RuntimeSkill.h é incluído diretamente (ex: por RuntimeSkill.cpp
-// de teste), inclua SkillTypes.h antes ou use o include abaixo que é
-// seguro pelo guard:
-#include "Entities.h"   // Vetor3D — sempre seguro (sem ciclo)
+// Não inclui SkillTypes.h para evitar ciclo (SkillTypes→RuntimeSkill→SkillTypes).
+// Quando incluso via SkillTypes.h, os enums já estão definidos acima pelo TU.
+#include "Entities.h"
 #include <vector>
 #include <cstdlib> // rand()
 #include <cmath>   // cosf, sinf
 
-// ===========================================================================
-// RuntimeSkill — uma instancia viva de uma SkillData
-//
-// Campos de estado por camada:
-//   Origem    : centro, alvo, idAlvo
-//   Movimento : posicao, direcao, anguloAtual, raioAtual,
-//               distPercorrida, fase, ricochetesFeitos, tickAcumulado
-//   Forma     : tickAcumulado (reusado para dano continuo), geracao
-//   Recursao  : geracao, saltosFeitos
-// ===========================================================================
 struct RuntimeSkill {
     int     idSkillData;      // indice no catalogo SkillManager::catalogo
     bool    ativo;            // false = slot livre no pool
@@ -71,26 +49,16 @@ struct RuntimeSkill {
     // --- Recursao (Prism/Chain) ---
     int     geracao;          // profundidade de recursao atual (0 = raiz)
 
-    // --- Cache de atributos efetivos desta instância ---
-    // Cacheados no spawn a partir da SkillData para acesso O(1) no executor
-    // sem precisar consultar o catálogo a cada colisão.
-    int     dano;              // dano efetivo (efeitos[0].valor ao nascer)
+    // Cacheados no spawn para acesso O(1) no executor sem consultar o catálogo.
+    int     dano;              // efeitos[0].valor ao nascer
     float   raioColisao;       // raio de colisão efetivo (forma.raioColisao ao nascer)
     int     perfuracaoRestante;// atravessamentos restantes (forma.perfuracao ao nascer)
 
-    // --- Array local de zumbis ja acertados neste frame ---
-    // Evita que o mesmo projétil acerte o mesmo zumbi duas vezes.
-    // Tamanho fixo (MAX_HITS_POR_FRAME) para manter POD.
-    int     jaAcertados[32];
+    int     jaAcertados[32];   // evita acertar o mesmo zumbi duas vezes por frame
     int     qtdAcertados;
 };
 
-// ===========================================================================
-// RuntimeEmitter — fonte que dispara skills periodicamente
-//
-// Usado por skills auto-fire (Aura por tick, Ring que re-emite, etc.).
-// Separado de RuntimeSkill para nao poluir o estado de instancias voando.
-// ===========================================================================
+// Separado de RuntimeSkill para não poluir instâncias voando.
 struct RuntimeEmitter {
     int     idSkillData;      // qual skill emite
     Vetor3D posicao;          // de onde emite (resolvido pela Origem)
@@ -98,12 +66,7 @@ struct RuntimeEmitter {
     bool    ativo;
 };
 
-// ===========================================================================
-// RuntimeEffect — status aplicado a um zumbi (DoT, slow, stun)
-//
-// Vive separado para ticar independentemente da skill que o causou.
-// Quando duracaoRestante <= 0, marcar como !ativo e compactar.
-// ===========================================================================
+// Toca independentemente da skill que o causou; inativo quando duracaoRest <= 0.
 struct RuntimeEffect {
     int        idZumbi;       // indice na horda que sofre o efeito
     EfeitoType tipo;          // BURN / FREEZE / SHOCK
@@ -113,20 +76,7 @@ struct RuntimeEffect {
     bool       ativo;
 };
 
-// ===========================================================================
-// GESTAO DE POOL
-//
-// Estrategia swap-and-pop adaptada: reusa slots inativos antes de crescer
-// o vector. Isso evita alocacao de heap no hot path apos o warm-up inicial.
-//
-// Complexidade:
-//   adicionarAoPool   : O(n) no pior caso (busca slot livre), O(1) amortizado
-//   compactarPool     : O(n) — chamada periodicamente, nao por frame
-// ===========================================================================
-
-// Adiciona uma nova instancia ao pool, reusando o primeiro slot inativo.
-// Se nao houver slot livre, faz push_back (crescimento amortizado O(1)).
-// Retorna o indice do slot onde a instancia foi colocada.
+// Reusa o primeiro slot inativo; push_back se não houver. Retorna o índice do slot.
 inline int adicionarAoPool(std::vector<RuntimeSkill>& pool,
                             const RuntimeSkill& nova) {
     for (int i = 0; i < (int)pool.size(); ++i) {
@@ -163,8 +113,7 @@ inline int adicionarEfeito(std::vector<RuntimeEffect>& pool,
     return (int)pool.size() - 1;
 }
 
-// Compacta o pool removendo slots inativos (swap-and-pop sequencial).
-// Preserva a ordem relativa dos ativos. Chamada periodicamente (nao por frame).
+// Remove inativos; chamada periodicamente, não por frame — O(n).
 inline void compactarPool(std::vector<RuntimeSkill>& pool) {
     int w = 0;
     for (int r = 0; r < (int)pool.size(); ++r) {
@@ -189,23 +138,8 @@ inline void compactarEfeitos(std::vector<RuntimeEffect>& pool) {
     pool.resize(w);
 }
 
-// ===========================================================================
-// inicializarRuntime
-//
-// Configura um RuntimeSkill recem-criado a partir da SkillData e dos
-// parametros de spawn (posicao de origem, alvo, indice dentro do lote).
-//
-// O campo 'indiceNoLote' e 'totalNoLote' sao usados para distribuir
-// angulos em Cone, Ring e Radial sem precisar de um loop externo aqui.
-//
-// Entrada: r             — RuntimeSkill a preencher
-//          s             — SkillData de referencia
-//          origemPos     — posicao de spawn resolvida pela Origem
-//          alvo          — posicao do alvo (mouse/inimigo/ponto)
-//          indiceNoLote  — 0-based: qual projetil do lote e este
-//          totalNoLote   — quantos projeteis estao sendo spawnados juntos
-//          geracaoInicial— profundidade de recursao (0 para disparos normais)
-// ===========================================================================
+// Preenche r a partir de s e dos parâmetros de spawn.
+// indiceNoLote/totalNoLote distribuem ângulos em Cone/Ring sem loop externo.
 inline void inicializarRuntime(RuntimeSkill& r,
                                 const SkillData& s,
                                 int idSkillData,
@@ -214,7 +148,6 @@ inline void inicializarRuntime(RuntimeSkill& r,
                                 int indiceNoLote,
                                 int totalNoLote,
                                 int geracaoInicial) {
-    // Zera tudo
     int i;
     char* p = (char*)&r;
     for (i = 0; i < (int)sizeof(RuntimeSkill); ++i) p[i] = 0;
@@ -226,16 +159,16 @@ inline void inicializarRuntime(RuntimeSkill& r,
     r.alvo        = alvo;
     r.idAlvo      = -1;
     r.geracao     = geracaoInicial;
-// Tempo de vida: usa duracao da forma para formas continuas.
-    // Senao, calcula o tempo de voo exato baseado no alcanceMax e velocidade.
+
+    // Formas contínuas usam duracao; projéteis calculam tempo de voo por alcance/velocidade.
     if (s.forma.duracao > 0.0f) {
         r.tempoVida = s.forma.duracao;
     } else if (s.movimento.velocidade > 0.001f && s.forma.alcanceMax > 0.0f) {
         r.tempoVida = s.forma.alcanceMax / s.movimento.velocidade;
     } else {
-        r.tempoVida = 30.0f; // fallback de seguranca
+        r.tempoVida = 30.0f;  // fallback se sem alcance/velocidade definidos
     }
-    // --- Direcao base (origem -> alvo, plano XZ) ---
+
     float dx = alvo.x - origemPos.x;
     float dz = alvo.z - origemPos.z;
     float len = std::sqrt(dx * dx + dz * dz);
@@ -243,21 +176,17 @@ inline void inicializarRuntime(RuntimeSkill& r,
         r.direcao.x = dx / len;
         r.direcao.z = dz / len;
     } else {
-        r.direcao.x = 1.0f; // direcao padrao se origem == alvo
+        r.direcao.x = 1.0f;  // fallback quando origem == alvo
         r.direcao.z = 0.0f;
     }
 
-    // --- Distribuicao angular para Cone / Ring / Projectile multi ---
     if (totalNoLote > 1) {
         float spread = s.forma.spreadAngulo;
         float angulo = 0.0f;
 
         if (totalNoLote == 2) {
-            // Tiro duplo em V
-            angulo = (indiceNoLote == 0) ? -spread : spread;
+            angulo = (indiceNoLote == 0) ? -spread : spread;  // duplo em V
         } else {
-            // Cone simetrico: distribui de -spread/2 a +spread/2
-            // Ring: distribui 360 graus uniformemente
             bool ehRing = (s.forma.tipo == FORMA_RING);
             if (ehRing) {
                 float passo = (2.0f * 3.14159265f) / (float)totalNoLote;
@@ -270,7 +199,6 @@ inline void inicializarRuntime(RuntimeSkill& r,
             }
         }
 
-        // Rotacionar a direcao base pelo angulo calculado
         float cosA = std::cos(angulo);
         float sinA = std::sin(angulo);
         float nx = r.direcao.x * cosA - r.direcao.z * sinA;
@@ -279,10 +207,8 @@ inline void inicializarRuntime(RuntimeSkill& r,
         r.direcao.z = nz;
     }
 
-    // --- Estado inicial por tipo de movimento ---
     switch (s.movimento.tipo) {
         case MOV_ORBIT:
-            // Inicia em posicao orbital: centro + offset angular
             r.anguloAtual = (totalNoLote > 1)
                 ? (2.0f * 3.14159265f / (float)totalNoLote) * (float)indiceNoLote
                 : 0.0f;
@@ -296,13 +222,12 @@ inline void inicializarRuntime(RuntimeSkill& r,
             break;
 
         case MOV_FALL:
-            // Começa no alto e cai
             r.posicao.y = s.movimento.alturaInicial;
-            r.fase      = 0; // 0 = caindo, 1 = forma ativa no chao
+            r.fase      = 0;  // 0=caindo, 1=ativo no chão
             break;
 
         case MOV_BOOMERANG:
-            r.fase           = 0; // 0 = ida, 1 = volta
+            r.fase           = 0;  // 0=ida, 1=volta
             r.distPercorrida = 0.0f;
             break;
 
@@ -314,7 +239,6 @@ inline void inicializarRuntime(RuntimeSkill& r,
             break;
     }
 
-    // --- Estado inicial por tipo de forma ---
     if (s.forma.tipo == FORMA_RING) {
         r.anguloAtual = (2.0f * 3.14159265f / (float)totalNoLote) * (float)indiceNoLote;
     }

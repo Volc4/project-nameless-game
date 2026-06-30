@@ -2,28 +2,10 @@
 #define SKILL_EXECUTOR_H
 
 // ===========================================================================
-//  SkillExecutor.h — Executor Universal (Camada 2 do motor Data-Driven)
+//  SkillExecutor.h — Executor universal por switch sobre enum (O(1) por camada).
 //
-//  É o coração do motor: UMA função executarSkill(SkillData&, RuntimeSkill&,…)
-//  que despacha cada camada por switch sobre enum (jump-table O(1)). Não há
-//  classes de habilidade; todo comportamento é produzido lendo dados.
-//
-//  RESPONSABILIDADES
-//   - resolverOrigem()   : 8 origens → posição/alvo no mundo.
-//   - mov*()             : 10 movimentos → integração vetorial por frame.
-//   - atualizarForma()   : ticks de formas contínuas (Beam/Area/Aura/Wall).
-//   - colideForma()      : predicado de colisão por forma.
-//   - resolverEfeitos()  : 10 efeitos on-hit/on-tick.
-//   - executarSkill()    : orquestra Origem→Movimento→Forma por instância.
-//
-//  DESACOPLAMENTO (importante para compilar sem o bug de ordem de include):
-//   O executor NÃO inclui GameLogic.h nem SpatialGrid.h. Ele depende de um
-//   pequeno conjunto de funções "host" (definidas em GameLogic.h/SpatialGrid.h)
-//   declaradas adiante como protótipos. Quem incluir este header deve garantir
-//   que essas funções existam no link. Isso mantém o executor testável em
-//   isolamento e quebra a dependência circular.
-//
-//  C++98: switch sobre enum, sem std::function, sem lambda, POD por toda parte.
+//  resolverOrigem → mov*() → atualizarForma → colideForma → resolverEfeitos
+//  Não inclui SpatialGrid.h; depende de funções "host" declaradas abaixo.
 // ===========================================================================
 
 #include "SkillTypes.h"
@@ -34,14 +16,9 @@
 #include <cstdlib>   // rand
 #include <cmath>
 
-// ---------------------------------------------------------------------------
-// CONTRATO COM O HOST (GameLogic.h / SpatialGrid.h)
-//   Protótipos das funções já existentes no projeto que o executor reutiliza.
-//   Preservar paridade: a resolução de Damage/Drain/Heal abaixo reproduz
-//   exatamente o comportamento de processarColisoesTiros_Grade().
-// ---------------------------------------------------------------------------
-struct GradeEspacial;                         // definida em SpatialGrid.h
-extern const float FATOR_DANO_SOBRECARGA;     // GameLogic.h
+// Funções host definidas em Main.cpp/SpatialGrid.h — o executor não as inclui.
+struct GradeEspacial;
+extern const float FATOR_DANO_SOBRECARGA;
 
 void  processarMorteZumbi(EstadoDoJogo& jogo, Zumbi& z);                 // GameLogic.h
 void  criarFloatingDamage(EstadoDoJogo& jogo, Vetor3D posicaoImpacto, int dano); // GameLogic.h
@@ -49,16 +26,11 @@ void  criarParticulasMorte(EstadoDoJogo& jogo, Vetor3D posicaoOrigem,
                            float corR, float corG, float corB);          // GameLogic.h
 void  obterCorBaseZumbi(TipoZumbi tipo, float& corR, float& corG, float& corB);  // GameLogic.h
 
-// Busca de vizinhos da grade (assinatura de GradeEspacial::obterInimigosVizinhos).
-// Declarada como helper livre para o executor não depender da definição da struct.
+// Adaptador livre — executor não inclui GradeEspacial diretamente.
 void  obterVizinhosHost(GradeEspacial& grade, float x, float z,
                         std::vector<int>& saida);
 
-// ===========================================================================
-//  PARTE A — RESOLUÇÃO DE ORIGEM
-// ===========================================================================
-
-// Encontra o índice do inimigo vivo mais próximo de `de` (ou -1). O(vizinhos).
+// Índice do inimigo vivo mais próximo de `de` via grade, ou -1.
 inline int acharInimigoMaisProximo(EstadoDoJogo& jogo, GradeEspacial& grade,
                                    Vetor3D de) {
     std::vector<int> cand;
@@ -74,7 +46,7 @@ inline int acharInimigoMaisProximo(EstadoDoJogo& jogo, GradeEspacial& grade,
     return melhor;
 }
 
-// Resolve a posição-base de uma origem. `alvoClique` é o ponto do mouse (Cursor).
+// Posição de spawn para cada OrigemType; alvoClique é o ponto do cursor.
 inline Vetor3D resolverOrigem(EstadoDoJogo& jogo, GradeEspacial& grade,
                               const OrigemData& o, Vetor3D alvoClique) {
     Vetor3D p = {0.0f, 0.0f, 0.0f};
@@ -98,7 +70,7 @@ inline Vetor3D resolverOrigem(EstadoDoJogo& jogo, GradeEspacial& grade,
             p = (j >= 0) ? jogo.horda[j].posicao : jogo.stand.posicao;
             break;
         }
-        case ORIG_ALLENEMIES:   p = jogo.stand.posicao; break; // spawn por inimigo é tratado no disparo
+        case ORIG_ALLENEMIES:   p = jogo.stand.posicao; break;  // spawn por inimigo no disparo, não aqui
         case ORIG_ORBITPOINT:   p = jogo.protagonista.posicao; break;
         default:                p = jogo.stand.posicao; break;
     }
@@ -106,10 +78,7 @@ inline Vetor3D resolverOrigem(EstadoDoJogo& jogo, GradeEspacial& grade,
     return p;
 }
 
-// ===========================================================================
-//  PARTE B — EXECUTORES DE MOVIMENTO (um por MovimentoType)
-//   Cada um integra r.posicao para o frame. Sem efeitos colaterais de jogo.
-// ===========================================================================
+// --- Integradores de movimento (um por MovimentoType) ---
 
 inline void movLinear(const SkillData& s, RuntimeSkill& r, float dt) {
     r.posicao.x += r.direcao.x * s.movimento.velocidade * dt;
@@ -144,9 +113,7 @@ inline void movBoomerang(const SkillData& s, RuntimeSkill& r, float dt) {
 
 inline void movHoming(const SkillData& s, RuntimeSkill& r,
                       EstadoDoJogo& jogo, float dt) {
-    // Disparo inteligente: persegue o alvo (idAlvo). Se o alvo morreu ou é
-    // inválido, RE-ADQUIRE o zumbi vivo mais próximo (o míssil nunca fica
-    // voando reto à toa enquanto houver inimigos).
+    // Re-adquire o zumbi mais próximo se o alvo atual morreu — o míssil nunca voa reto.
     bool alvoValido = (r.idAlvo >= 0 && r.idAlvo < (int)jogo.horda.size() &&
                        jogo.horda[r.idAlvo].vivo);
     if (!alvoValido) {
@@ -170,7 +137,6 @@ inline void movHoming(const SkillData& s, RuntimeSkill& r,
         if (t > 1.0f) t = 1.0f;
         r.direcao.x += (desejada.x - r.direcao.x) * t;
         r.direcao.z += (desejada.z - r.direcao.z) * t;
-        // renormaliza
         float len = std::sqrt(r.direcao.x*r.direcao.x + r.direcao.z*r.direcao.z);
         if (len > 0.0001f) { r.direcao.x /= len; r.direcao.z /= len; }
     }
@@ -233,25 +199,17 @@ inline void movRandomWalk(const SkillData& s, RuntimeSkill& r, float dt) {
 }
 
 inline void movStationary(const SkillData& s, RuntimeSkill& r) {
-    if (s.movimento.seguirOrigem) {
-        r.posicao = r.centro;                    // cola na origem (Aura)
-    }
-    // senão: fica onde nasceu (Wall/Beam/Explosion fixa).
+    if (s.movimento.seguirOrigem)
+        r.posicao = r.centro;  // Aura segue origem; Wall/Beam fixos ficam onde nasceram
 }
 
-// ===========================================================================
-//  PARTE C — ATUALIZAÇÃO DE FORMA
-//   Avança duração e marca quando um tick de dano contínuo deve ocorrer.
-//   Retorna true se a forma deve aplicar efeitos NESTE frame (tick disparou
-//   ou forma é instantânea de contato).
-// ===========================================================================
+// True se a forma deve aplicar efeitos neste frame (tick disparado ou contato).
 inline bool atualizarForma(const SkillData& s, RuntimeSkill& r, float dt) {
     switch (s.forma.tipo) {
         case FORMA_BEAM:
         case FORMA_AREA:
         case FORMA_AURA:
         case FORMA_WALL: {
-            // formas persistentes: ticam em intervalos
             r.tickAcumulado += dt;
             if (r.tickAcumulado >= s.forma.tickIntervalo) {
                 r.tickAcumulado -= s.forma.tickIntervalo;
@@ -260,9 +218,7 @@ inline bool atualizarForma(const SkillData& s, RuntimeSkill& r, float dt) {
             return false;
         }
         case FORMA_ARC: {
-            // Arco-projétil: sincroniza centro com posição para que o arco
-            // se mova como um projétil. Ticks controlam frequência de dano.
-            r.centro = r.posicao;
+            r.centro = r.posicao;  // arco se move como projétil; centro segue posição
             r.tickAcumulado += dt;
             if (r.tickAcumulado >= s.forma.tickIntervalo) {
                 r.tickAcumulado -= s.forma.tickIntervalo;
@@ -271,19 +227,13 @@ inline bool atualizarForma(const SkillData& s, RuntimeSkill& r, float dt) {
             return false;
         }
         case FORMA_EXPLOSION:
-            // instantânea: aplica uma vez, depois expira no frame seguinte
-            return true;
+            return true;   // aplica uma vez; expira no frame seguinte
         default:
-            // Projectile/Cone/Ring/Prism/Chain/Wave: colisão por contato
-            return true;
+            return true;   // Projectile/Cone/Ring/etc: colisão por contato
     }
 }
 
-// ===========================================================================
-//  PARTE D — COLISÃO POR FORMA
-//   Predicado: esta instância atinge este zumbi neste frame?
-//   Reutiliza verificarColisao/calcularDistanciaQuadrada e os helpers novos.
-// ===========================================================================
+// Predicado de colisão por FormaType — usa MathUtils.h.
 inline bool colideForma(const SkillData& s, const RuntimeSkill& r,
                         const Zumbi& z) {
     switch (s.forma.tipo) {
@@ -318,13 +268,6 @@ inline bool colideForma(const SkillData& s, const RuntimeSkill& r,
     }
 }
 
-// ===========================================================================
-//  PARTE E — RESOLUÇÃO DE EFEITOS
-//   Aplica o array de EfeitoData ao zumbi atingido. Damage/Drain/Heal em
-//   PARIDADE EXATA com processarColisoesTiros_Grade() do projeto atual.
-//   (Status BURN/FREEZE/SHOCK e SpawnSkill ficam para a Camada 3 — aqui são
-//    aplicados de forma mínima e segura, sem quebrar nada.)
-// ===========================================================================
 inline void aplicarDanoZumbi(EstadoDoJogo& jogo, Zumbi& z, int dano) {
     int danoEfetivo = dano;
     if (jogo.stand.emSobrecarga)
@@ -339,11 +282,10 @@ inline void aplicarDanoZumbi(EstadoDoJogo& jogo, Zumbi& z, int dano) {
     }
 }
 
+// Aplica o array EfeitoData ao zumbi atingido.
 inline void resolverEfeitos(const SkillData& s, const RuntimeSkill& r,
                             Zumbi& z, EstadoDoJogo& jogo) {
-    // Bumerangue na fase de volta: metade do dano (comportamento genérico,
-    // não específico ao arquétipo — qualquer MOV_BOOMERANG herda isso).
-    bool retornoBumerangue = (s.movimento.tipo == MOV_BOOMERANG && r.fase == 1);
+    bool retornoBumerangue = (s.movimento.tipo == MOV_BOOMERANG && r.fase == 1);  // metade do dano na volta
 
     for (int i = 0; i < s.numEfeitos; ++i) {
         const EfeitoData& e = s.efeitos[i];
@@ -357,13 +299,13 @@ inline void resolverEfeitos(const SkillData& s, const RuntimeSkill& r,
                 aplicarDanoZumbi(jogo, z, dano);
                 break;
             }
-            case EFE_DRAIN:                       // antigo efeitoDrenarTensao
+            case EFE_DRAIN:
                 if (!jogo.stand.emSobrecarga) {
                     jogo.stand.tensaoAtual -= (e.valor > 0 ? (float)e.valor : 3.0f);
                     if (jogo.stand.tensaoAtual < 0.0f) jogo.stand.tensaoAtual = 0.0f;
                 }
                 break;
-            case EFE_HEAL: {                      // cura garantida de e.valor HP
+            case EFE_HEAL: {
                 int cura = (e.valor > 0) ? e.valor : 1;
                 jogo.protagonista.hp += cura;
                 if (jogo.protagonista.hp > jogo.protagonista.hpMaximo)
@@ -371,7 +313,7 @@ inline void resolverEfeitos(const SkillData& s, const RuntimeSkill& r,
                 break;
             }
             case EFE_SHOCK:
-                aplicarDanoZumbi(jogo, z, e.valor);  // dano; stun real na Camada 3
+                aplicarDanoZumbi(jogo, z, e.valor);  // stun completo na Camada 3
                 break;
             case EFE_KNOCKBACK: {
                 Vetor3D dir = obterDirecaoNormalizada(jogo.stand.posicao, z.posicao);
@@ -380,7 +322,6 @@ inline void resolverEfeitos(const SkillData& s, const RuntimeSkill& r,
                 break;
             }
             case EFE_EXPLOSION: {
-                // AoE centrado no zumbi atingido: dano a todos no raio magnitude.
                 float raio = (e.magnitude > 0.0f) ? e.magnitude : 1.5f;
                 float raio2 = raio * raio;
                 int danoExp = (e.valor > 0) ? e.valor : 1;
@@ -398,8 +339,7 @@ inline void resolverEfeitos(const SkillData& s, const RuntimeSkill& r,
             case EFE_FREEZE:
             case EFE_CHAINEXPLOSION:
             case EFE_SPAWNSKILL:
-                // Camada 3: placeholder seguro.
-                if (e.valor > 0) aplicarDanoZumbi(jogo, z, e.valor);
+                if (e.valor > 0) aplicarDanoZumbi(jogo, z, e.valor);  // Camada 3: placeholder
                 break;
             default:
                 break;
@@ -407,20 +347,14 @@ inline void resolverEfeitos(const SkillData& s, const RuntimeSkill& r,
     }
 }
 
-// ===========================================================================
-//  PARTE F — EXECUTOR UNIVERSAL (por instância, por frame)
-//   Orquestra Origem→Movimento→Forma. A COLISÃO+EFEITOS é chamada pelo loop
-//   de colisão (host), que itera o pool e usa colideForma()/resolverEfeitos().
-// ===========================================================================
+// Orquestra Origem→Movimento→vida por instância; colisão/efeitos ficam no host.
 inline void executarSkill(const SkillData& s, RuntimeSkill& r,
                           EstadoDoJogo& jogo, GradeEspacial& grade, float dt) {
     if (!r.ativo) return;
 
-    // 1. ORIGEM — re-resolve centro se a origem é dinâmica.
     if (s.origem.reavaliarPorFrame)
         r.centro = resolverOrigem(jogo, grade, s.origem, r.alvo);
 
-    // 2. MOVIMENTO — integra a posição.
     switch (s.movimento.tipo) {
         case MOV_LINEAR:     movLinear(s, r, dt);             break;
         case MOV_ORBIT:      movOrbit(s, r, dt);              break;
@@ -435,7 +369,7 @@ inline void executarSkill(const SkillData& s, RuntimeSkill& r,
         default: break;
     }
 
-    // 3. tempo de vida e limite de arena (projéteis que escapam morrem).
+    // Decai tempo de vida; projéteis fora da arena morrem.
     if (r.tempoVida > 0.0f) {
         r.tempoVida -= dt;
         if (r.tempoVida <= 0.0f) r.ativo = false;
