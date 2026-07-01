@@ -68,27 +68,37 @@ static void desenharJogador() {
         if (ciclo % 2 == 0) return;
     }
 
-    glPushMatrix();
-    
-    // CORREÇÃO 1: Levanta a Sofia no eixo Y para não ficar enterrada
-    glTranslatef(p.posicao.x, SOFIA_Y_OFFSET, p.posicao.z);
-
-    float angGraus = g_jogo.stand.anguloMira * (180.0f / 3.14159265f);
-    
-    // CORREÇÃO 2: Sinal negativo em -angGraus conserta o espelhamento Cima/Baixo
-    glRotatef(-angGraus + SOFIA_ROT_OFFSET, 0.0f, 1.0f, 0.0f);
-    
-    glRotatef(90.0f, 1.0f, 0.0f, 0.0f); // Blender exporta Z-up; corrige para Y-up
-    glScalef(SOFIA_ESCALA, SOFIA_ESCALA, SOFIA_ESCALA);
-
-    // Iluminação mínima para o modelo texturizado
+    // Iluminação mínima para o modelo texturizado — PRECISA ser configurada
+    // antes do glScalef(SOFIA_ESCALA) abaixo. glLightfv(GL_POSITION) transforma
+    // a posição pela modelview corrente; como SOFIA_ESCALA = 0.008, configurar
+    // a luz depois do scale colapsava o ponto de luz quase em cima do modelo,
+    // deixando a Sofia sem receber luz (tudo preto).
     glEnable(GL_LIGHTING);
-    GLfloat lpos[4] = { 0.0f, 20.0f,  5.0f, 1.0f };
+    glEnable(GL_NORMALIZE); // renormaliza as normais distorcidas pelo scale pequeno
+    glEnable(GL_COLOR_MATERIAL);
+    glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
+    GLfloat lpos[4] = { p.posicao.x, 20.0f, p.posicao.z + 5.0f, 1.0f };
     GLfloat lamb[4] = { 0.5f,  0.5f,  0.5f, 1.0f };
     GLfloat ldif[4] = { 1.0f,  1.0f,  1.0f, 1.0f };
     configurarLuzPersonagem(lpos, lamb, ldif);
 
+    glPushMatrix();
+
+    // CORREÇÃO 1: Levanta a Sofia no eixo Y para não ficar enterrada
+    glTranslatef(p.posicao.x, SOFIA_Y_OFFSET, p.posicao.z);
+
+    float angGraus = g_jogo.stand.anguloMira * (180.0f / 3.14159265f);
+
+    // CORREÇÃO 2: Sinal negativo em -angGraus conserta o espelhamento Cima/Baixo
+    glRotatef(-angGraus + SOFIA_ROT_OFFSET, 0.0f, 1.0f, 0.0f);
+
+    glRotatef(90.0f, 1.0f, 0.0f, 0.0f); // Blender exporta Z-up; corrige para Y-up
+    glScalef(SOFIA_ESCALA, SOFIA_ESCALA, SOFIA_ESCALA);
+
     g_sofia.renderizar();
+
+    glDisable(GL_COLOR_MATERIAL);
+    glDisable(GL_NORMALIZE);
 
     // Pistola — bone socket: herda a matriz global do osso da mão da Sofia.
     // Ainda dentro do glPushMatrix da Sofia, então as transforms dela já estão na pilha.
