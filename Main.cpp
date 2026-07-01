@@ -11,14 +11,6 @@
 //    4. Inicializa o catálogo (registrarSkillsPadrao) e o inventário
 //    5. Implementa os callbacks GLUT: display, idle, mouse, keyboard
 //    6. Gerencia os menus de level-up e a câmera isométrica
-//
-//  ORDEM DE INCLUDES (crítica para evitar ciclos):
-//    Entities.h  →  SkillTypes.h (inclui RuntimeSkill.h)
-//    SkillManager.h (inclui SpatialGrid.h ao final, após a forward decl)
-//    ProgressionSystem.h (inclui tudo da progressão)
-//    SpatialGrid.h (grade espacial; já incluída por SkillManager.h)
-//    SkillRender.h (desenho data-driven)
-//    SkillRegistry.h (catálogo de skills concretas)
 // =============================================================================
 
 // --- OpenGL/GLUT -------------------------------------------------------------
